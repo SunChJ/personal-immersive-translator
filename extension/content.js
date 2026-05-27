@@ -1,6 +1,8 @@
 const PIT_STATE = {
   running: false,
   cancelRequested: false,
+  dynamicObserver: null,
+  dynamicTimer: null,
   floating: null,
   floatingStatusTimer: null,
   translated: false,
@@ -8,6 +10,137 @@ const PIT_STATE = {
   sessionId: createShortId(),
   overlay: null
 };
+
+const PIT_DIRECT_TEXT_SELECTOR = [
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "p",
+  "li",
+  "blockquote",
+  "figcaption",
+  "caption",
+  "dt",
+  "dd",
+  "summary",
+  "td",
+  "th"
+].join(",");
+
+const PIT_FORCE_TEXT_SELECTOR = [
+  "[data-testid='tweetText']",
+  "[role='heading']",
+  "[dir='auto']",
+  "[lang][dir]"
+].join(",");
+
+const PIT_SKIP_TAGS = new Set([
+  "area",
+  "audio",
+  "button",
+  "canvas",
+  "code",
+  "datalist",
+  "embed",
+  "head",
+  "hr",
+  "iframe",
+  "img",
+  "input",
+  "kbd",
+  "link",
+  "map",
+  "math",
+  "meta",
+  "noscript",
+  "object",
+  "option",
+  "picture",
+  "pre",
+  "script",
+  "select",
+  "source",
+  "style",
+  "svg",
+  "template",
+  "textarea",
+  "time",
+  "track",
+  "video"
+]);
+
+const PIT_BLOCK_DISPLAYS = new Set([
+  "block",
+  "flow-root",
+  "flex",
+  "grid",
+  "list-item",
+  "table",
+  "table-caption",
+  "table-cell"
+]);
+
+const PIT_INLINE_DISPLAYS = new Set([
+  "inline",
+  "inline-block",
+  "inline-flex",
+  "inline-grid",
+  "contents"
+]);
+
+const PIT_SITE_RULES = [
+  {
+    host: /(^|\.)news\.ycombinator\.com$/i,
+    selectors: [
+      ".titleline",
+      ".toptext",
+      ".commtext"
+    ],
+    skipSelectors: [".rank", ".votelinks", ".age", ".score", ".subtext", ".pagetop", ".yclinks"]
+  },
+  {
+    host: /(^|\.)x\.com$|(^|\.)twitter\.com$/i,
+    selectors: [
+      "article [data-testid='tweetText']",
+      "article [lang][dir='auto']",
+      "article [role='heading']",
+      "main [data-testid='tweetText']"
+    ],
+    skipSelectors: [
+      "[aria-label*='keyboard' i]",
+      "[data-testid='sidebarColumn']",
+      "[role='navigation']",
+      "[role='search']"
+    ]
+  },
+  {
+    host: /(^|\.)github\.com$/i,
+    selectors: [
+      ".markdown-body h1",
+      ".markdown-body h2",
+      ".markdown-body h3",
+      ".markdown-body p",
+      ".markdown-body li",
+      ".markdown-body blockquote",
+      ".comment-body p",
+      ".comment-body li"
+    ],
+    skipSelectors: ["pre", "code", ".blob-wrapper", ".highlight"]
+  },
+  {
+    host: /(^|\.)reddit\.com$/i,
+    selectors: [
+      "shreddit-post [slot='text-body']",
+      "shreddit-comment [slot='comment']",
+      "[data-testid='post-container'] h1",
+      "[data-testid='post-container'] p"
+    ],
+    skipSelectors: ["nav", "header", "footer", "[aria-label*='advertise' i]"]
+  }
+];
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) {
@@ -61,6 +194,8 @@ async function translatePage(options) {
       clearTranslations();
     }
 
+    stopDynamicTranslationObserver();
+
     const blocks = collectTranslationBlocks(document.body, {
       minChars: Number(options.minChars || 4)
     });
@@ -71,127 +206,200 @@ async function translatePage(options) {
       return { translated: 0, total: 0 };
     }
 
-    const batchSize = clamp(Number(options.batchSize || 24), 1, 40);
-    let translated = 0;
-
-    for (let offset = 0; offset < orderedBlocks.length; offset += batchSize) {
-      if (PIT_STATE.cancelRequested) {
-        updateOverlay(`Stopped after ${translated}/${orderedBlocks.length}.`, true);
-        return { translated, total: orderedBlocks.length, stopped: true };
-      }
-
-      const batch = orderedBlocks.slice(offset, offset + batchSize);
-      updateOverlay(`Translating ${offset + 1}-${Math.min(offset + batch.length, orderedBlocks.length)} / ${orderedBlocks.length}...`);
-
-      const response = await chrome.runtime.sendMessage({
-        type: "translate-batch",
-        items: batch.map((entry, index) => ({
-          id: entry.id,
-          index,
-          tag: entry.element.tagName.toLowerCase(),
-          path: describeElementPath(entry.element),
-          text: entry.text
-        })),
-        targetLanguage: options.targetLanguage || "中文",
-        endpoint: options.endpoint || "http://127.0.0.1:8787",
-        sourceUrl: location.href
-      });
-
-      if (!response || !response.ok) {
-        throw new Error(response?.error || "Translation request failed.");
-      }
-
-      applyTranslations(batch, response.translations, options.mode || "bilingual");
-      translated += batch.length;
-    }
+    const translated = await translateBlocks(orderedBlocks, options);
 
     updateOverlay(`Done. Translated ${translated} text blocks.`, true);
     PIT_STATE.translated = translated > 0;
     updateFloatingState();
     setFloatingStatus(`Done: ${translated}`);
+    if (translated > 0) {
+      startDynamicTranslationObserver(options);
+    }
     return { translated, total: orderedBlocks.length };
   } finally {
     PIT_STATE.running = false;
   }
 }
 
-function collectTranslationBlocks(root, options) {
-  const semanticSelector = [
-    "article h1",
-    "article h2",
-    "article h3",
-    "article h4",
-    "article h5",
-    "article h6",
-    "article p",
-    "article li",
-    "article blockquote",
-    "article figcaption",
-    "article caption",
-    "article dt",
-    "article dd",
-    "main h1",
-    "main h2",
-    "main h3",
-    "main h4",
-    "main h5",
-    "main h6",
-    "main p",
-    "main li",
-    "main blockquote",
-    "main figcaption",
-    "main caption",
-    "main dt",
-    "main dd",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "p",
-    "li",
-    "blockquote",
-    "figcaption",
-    "caption",
-    "dt",
-    "dd"
-  ].join(",");
-  const fallbackSelector = [
-    "article [data-testid='tweetText']",
-    "article [dir='auto']",
-    "article [lang]",
-    "main [data-testid='tweetText']",
-    "main [dir='auto']",
-    "main [lang]"
-  ].join(",");
+async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translating") {
+  const batchSize = clamp(Number(options.batchSize || 24), 1, 40);
+  let translated = 0;
 
+  for (let offset = 0; offset < orderedBlocks.length; offset += batchSize) {
+    if (PIT_STATE.cancelRequested) {
+      updateOverlay(`Stopped after ${translated}/${orderedBlocks.length}.`, true);
+      return translated;
+    }
+
+    const batch = orderedBlocks.slice(offset, offset + batchSize);
+    updateOverlay(`${overlayPrefix} ${offset + 1}-${Math.min(offset + batch.length, orderedBlocks.length)} / ${orderedBlocks.length}...`);
+
+    const response = await chrome.runtime.sendMessage({
+      type: "translate-batch",
+      items: batch.map((entry, index) => ({
+        id: entry.id,
+        index,
+        kind: entry.kind || "paragraph",
+        tag: entry.element.tagName.toLowerCase(),
+        path: describeElementPath(entry.element),
+        text: entry.text
+      })),
+      targetLanguage: options.targetLanguage || "中文",
+      endpoint: options.endpoint || "http://127.0.0.1:8787",
+      sourceUrl: location.href
+    });
+
+    if (!response || !response.ok) {
+      throw new Error(response?.error || "Translation request failed.");
+    }
+
+    applyTranslations(batch, response.translations, options.mode || "bilingual");
+    translated += batch.length;
+  }
+
+  return translated;
+}
+
+function collectTranslationBlocks(root, options) {
   const seen = new Set();
   const blocks = [];
+  const textFingerprints = new Set();
+  const minChars = Number(options.minChars || 4);
 
-  root.querySelectorAll(`${semanticSelector},${fallbackSelector}`).forEach((element) => {
-    if (seen.has(element) || shouldSkipElement(element) || hasExistingTranslation(element) || shouldPreferChildBlocks(element) || !isVisible(element) || isAssistiveOnlyElement(element)) {
-      return;
-    }
+  collectSiteRuleBlocks(root, { seen, blocks, textFingerprints, minChars });
 
-    const text = normalizeText(element.innerText || element.textContent || "");
-    if (text.length < options.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text)) {
-      return;
-    }
-
-    if (isFallbackTextElement(element) && hasBetterTextAncestor(element, seen)) {
-      return;
-    }
-
-    if (hasCollectedDescendant(element, seen)) {
-      return;
-    }
-
-    seen.add(element);
-    blocks.push({ element, id: ensurePitId(element), text });
+  root.querySelectorAll(PIT_DIRECT_TEXT_SELECTOR).forEach((element) => {
+    pushTranslationBlock(element, {
+      seen,
+      blocks,
+      textFingerprints,
+      minChars,
+      kind: "semantic",
+      allowChildBlocks: false
+    });
   });
 
-  return blocks;
+  walkParagraphCandidates(root, (element) => {
+    pushTranslationBlock(element, {
+      seen,
+      blocks,
+      textFingerprints,
+      minChars,
+      kind: "walked",
+      allowChildBlocks: false
+    });
+  });
+
+  return blocks.sort((a, b) => {
+    if (a.element === b.element) {
+      return 0;
+    }
+    return a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
+  });
+}
+
+function collectSiteRuleBlocks(root, context) {
+  const rule = PIT_SITE_RULES.find((item) => item.host.test(location.hostname));
+  if (!rule) {
+    return;
+  }
+
+  root.querySelectorAll(rule.selectors.join(",")).forEach((element) => {
+    if (rule.skipSelectors.some((selector) => element.closest(selector))) {
+      return;
+    }
+
+    pushTranslationBlock(element, {
+      ...context,
+      kind: "site",
+      allowChildBlocks: true
+    });
+  });
+}
+
+function walkParagraphCandidates(root, visit) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+    acceptNode(node) {
+      if (!(node instanceof HTMLElement)) {
+        return NodeFilter.FILTER_SKIP;
+      }
+
+      if (isHardSkipElement(node)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  let element = walker.currentNode;
+  while (element) {
+    if (isParagraphCandidate(element)) {
+      visit(element);
+    }
+    element = walker.nextNode();
+  }
+}
+
+function isParagraphCandidate(element) {
+  if (!(element instanceof HTMLElement) || element.matches(PIT_DIRECT_TEXT_SELECTOR)) {
+    return false;
+  }
+
+  if (element.matches(PIT_FORCE_TEXT_SELECTOR)) {
+    return true;
+  }
+
+  const display = window.getComputedStyle(element).display;
+  if (!PIT_BLOCK_DISPLAYS.has(display)) {
+    return false;
+  }
+
+  if (hasParagraphLikeChild(element)) {
+    return false;
+  }
+
+  return hasDirectReadableText(element);
+}
+
+function pushTranslationBlock(element, context) {
+  if (
+    context.seen.has(element) ||
+    shouldSkipElement(element) ||
+    hasExistingTranslation(element) ||
+    !isVisible(element) ||
+    isAssistiveOnlyElement(element)
+  ) {
+    return false;
+  }
+
+  if (!context.allowChildBlocks && shouldPreferChildBlocks(element)) {
+    return false;
+  }
+
+  if (hasCollectedAncestor(element, context.seen) || hasCollectedDescendant(element, context.seen)) {
+    return false;
+  }
+
+  const text = extractReadableText(element);
+  if (text.length < context.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text)) {
+    return false;
+  }
+
+  if (isBoilerplateText(text)) {
+    return false;
+  }
+
+  const fingerprint = createTextFingerprint(text);
+  if (context.textFingerprints.has(fingerprint)) {
+    return false;
+  }
+
+  context.seen.add(element);
+  context.textFingerprints.add(fingerprint);
+  element.dataset.pitBlockKind = context.kind;
+  context.blocks.push({ element, id: ensurePitId(element), text, kind: context.kind });
+  return true;
 }
 
 function prioritizeBlocks(blocks, viewportFirst) {
@@ -216,29 +424,30 @@ function prioritizeBlocks(blocks, viewportFirst) {
 }
 
 function shouldSkipElement(element) {
+  if (isHardSkipElement(element)) {
+    return true;
+  }
+
   return Boolean(
     element.closest(
       [
-        "script",
-        "style",
-        "noscript",
-        "template",
-        "code",
-        "pre",
-        "textarea",
-        "input",
-        "select",
-        "option",
-        "svg",
-        "canvas",
         "[contenteditable='true']",
+        "[contenteditable='']",
         "[data-pit-skip]",
+        "[data-pit-translated='true']",
+        "[translate='no']",
+        ".notranslate",
         ".pit-translation",
         "#pit-floating",
         "#pit-status"
       ].join(",")
     )
   );
+}
+
+function isHardSkipElement(element) {
+  const tagName = element.tagName?.toLowerCase();
+  return Boolean(tagName && PIT_SKIP_TAGS.has(tagName));
 }
 
 function isVisible(element) {
@@ -284,31 +493,126 @@ function isInViewport(rect) {
 }
 
 function hasExistingTranslation(node) {
+  if (node.dataset?.pitTranslated === "true") {
+    return true;
+  }
+
   const sibling = node.nextElementSibling;
   return Boolean(sibling?.classList?.contains("pit-translation") || node.querySelector?.(":scope > .pit-translation"));
 }
 
 function shouldPreferChildBlocks(element) {
-  if (!element.matches("blockquote, dd, li, [role='article']")) {
+  if (element.matches("[data-testid='tweetText'], .titleline, .commtext")) {
     return false;
   }
 
-  return Boolean(element.querySelector("p, h1, h2, h3, h4, h5, h6, [data-testid='tweetText'], [dir='auto'][lang]"));
-}
-
-function isFallbackTextElement(element) {
-  return Boolean(element.matches("[data-testid='tweetText'], [dir='auto'], [lang]"));
-}
-
-function hasBetterTextAncestor(element, seen) {
-  const ancestor = element.parentElement?.closest("[data-testid='tweetText'], [dir='auto'][lang], p, li, blockquote");
-  if (!ancestor || ancestor === element || !seen.has(ancestor) || shouldSkipElement(ancestor) || hasExistingTranslation(ancestor) || !isVisible(ancestor)) {
-    return false;
+  if (element.matches("blockquote, dd, li, [role='article'], section, article, main, div, td, th")) {
+    return hasParagraphLikeChild(element);
   }
 
-  const ancestorText = normalizeText(ancestor.innerText || ancestor.textContent || "");
-  const elementText = normalizeText(element.innerText || element.textContent || "");
-  return ancestorText === elementText || ancestorText.length <= elementText.length + 12;
+  return false;
+}
+
+function hasParagraphLikeChild(element) {
+  return Boolean(
+    element.querySelector(
+      [
+        PIT_DIRECT_TEXT_SELECTOR,
+        "[data-testid='tweetText']",
+        "[dir='auto'][lang]",
+        "[role='heading']"
+      ].join(",")
+    )
+  );
+}
+
+function hasDirectReadableText(element) {
+  let text = "";
+
+  element.childNodes.forEach((child) => {
+    text += extractInlineReadableText(child, element);
+  });
+
+  return normalizeText(text).length >= 4;
+}
+
+function extractInlineReadableText(node, rootElement) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.nodeValue || "";
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE || !(node instanceof HTMLElement)) {
+    return "";
+  }
+
+  if (node !== rootElement && shouldSkipElement(node)) {
+    return "";
+  }
+
+  if (node.tagName.toLowerCase() === "br") {
+    return "\n";
+  }
+
+  if (node !== rootElement) {
+    const display = window.getComputedStyle(node).display;
+    if (PIT_BLOCK_DISPLAYS.has(display) && !PIT_INLINE_DISPLAYS.has(display)) {
+      return "";
+    }
+  }
+
+  let text = "";
+  node.childNodes.forEach((child) => {
+    text += extractInlineReadableText(child, rootElement);
+  });
+  return text;
+}
+
+function extractReadableText(element) {
+  const text = extractReadableTextFromNode(element, element);
+  return normalizeText(text);
+}
+
+function extractReadableTextFromNode(node, rootElement) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.nodeValue || "";
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE || !(node instanceof HTMLElement)) {
+    return "";
+  }
+
+  if (node !== rootElement && (shouldSkipElement(node) || !isVisible(node) || isAssistiveOnlyElement(node))) {
+    return "";
+  }
+
+  const tagName = node.tagName.toLowerCase();
+  if (tagName === "br") {
+    return "\n";
+  }
+
+  let text = "";
+  node.childNodes.forEach((child) => {
+    text += extractReadableTextFromNode(child, rootElement);
+    if (child.nodeType === Node.ELEMENT_NODE && child instanceof HTMLElement) {
+      const display = window.getComputedStyle(child).display;
+      if (PIT_BLOCK_DISPLAYS.has(display)) {
+        text += "\n";
+      }
+    }
+  });
+
+  return text;
+}
+
+function hasCollectedAncestor(element, seen) {
+  let current = element.parentElement;
+  while (current) {
+    if (seen.has(current)) {
+      return true;
+    }
+    current = current.parentElement;
+  }
+  return false;
 }
 
 function hasCollectedDescendant(element, seen) {
@@ -321,7 +625,16 @@ function hasCollectedDescendant(element, seen) {
 }
 
 function isLikelyChromeText(element, text) {
-  if (element.closest("nav, aside, header, footer, [role='navigation'], [role='search'], [aria-label='Timeline: Trending now']")) {
+  const siteRule = PIT_SITE_RULES.find((rule) => rule.host.test(location.hostname));
+  if (siteRule?.skipSelectors.some((selector) => element.closest(selector))) {
+    return true;
+  }
+
+  if (/^news\.ycombinator\.com$/i.test(location.hostname) && element.querySelector?.(".pagetop, .subtext, .yclinks")) {
+    return true;
+  }
+
+  if (element.closest("nav, aside, header, footer, menu, [role='navigation'], [role='search'], [role='banner'], [role='contentinfo'], [aria-label='Timeline: Trending now']")) {
     return text.length < 80;
   }
 
@@ -338,6 +651,31 @@ function isLikelyChromeText(element, text) {
   ].includes(lowered) || lowered.includes("keyboard shortcuts") || lowered.includes("press question mark");
 }
 
+function isBoilerplateText(text) {
+  const normalized = text.toLowerCase();
+  if (/^[\d\s:./,\-+%]+$/.test(normalized)) {
+    return true;
+  }
+
+  return [
+    "reply",
+    "retweet",
+    "like",
+    "share",
+    "follow",
+    "subscribe",
+    "sign in",
+    "log in",
+    "more",
+    "close",
+    "open menu"
+  ].includes(normalized);
+}
+
+function createTextFingerprint(text) {
+  return normalizeText(text).toLowerCase().slice(0, 240);
+}
+
 function applyTranslations(batch, translations, mode) {
   const translationsById = normalizeTranslationMap(batch, translations);
 
@@ -348,6 +686,7 @@ function applyTranslations(batch, translations, mode) {
     }
 
     if (mode === "replace") {
+      entry.element.dataset.pitTranslated = "true";
       entry.element.textContent = translation;
       return;
     }
@@ -357,6 +696,7 @@ function applyTranslations(batch, translations, mode) {
     translationBlock.dataset.pitSkip = "true";
     translationBlock.textContent = translation;
     applyInheritedTextStyle(entry.element, translationBlock);
+    entry.element.dataset.pitTranslated = "true";
 
     const listParent = entry.element.closest("li");
     if (entry.element === listParent) {
@@ -369,10 +709,98 @@ function applyTranslations(batch, translations, mode) {
 }
 
 function clearTranslations() {
+  stopDynamicTranslationObserver();
   document.querySelectorAll(".pit-translation").forEach((node) => node.remove());
+  document.querySelectorAll("[data-pit-translated='true']").forEach((node) => {
+    node.dataset.pitTranslated = "false";
+  });
   PIT_STATE.translated = false;
   updateFloatingState();
   setFloatingStatus("Cleared");
+}
+
+function startDynamicTranslationObserver(options) {
+  if (!document.body) {
+    return;
+  }
+
+  stopDynamicTranslationObserver();
+  const observer = new MutationObserver((mutations) => {
+    if (PIT_STATE.running || !hasPageTranslations()) {
+      return;
+    }
+
+    const hasRelevantChange = mutations.some((mutation) => {
+      if (mutation.type === "attributes") {
+        return mutation.target instanceof HTMLElement && !shouldSkipElement(mutation.target);
+      }
+
+      return Array.from(mutation.addedNodes).some((node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return normalizeText(node.nodeValue || "").length >= 4;
+        }
+        return node instanceof HTMLElement && !shouldSkipElement(node);
+      });
+    });
+
+    if (!hasRelevantChange) {
+      return;
+    }
+
+    window.clearTimeout(PIT_STATE.dynamicTimer);
+    PIT_STATE.dynamicTimer = window.setTimeout(() => {
+      translateDiscoveredBlocks(options).catch((error) => {
+        setFloatingStatus("Update failed");
+        updateOverlay(error instanceof Error ? error.message : String(error), true);
+      });
+    }, 900);
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["class", "style", "hidden", "aria-hidden"]
+  });
+  PIT_STATE.dynamicObserver = observer;
+}
+
+function stopDynamicTranslationObserver() {
+  PIT_STATE.dynamicObserver?.disconnect();
+  PIT_STATE.dynamicObserver = null;
+  window.clearTimeout(PIT_STATE.dynamicTimer);
+  PIT_STATE.dynamicTimer = null;
+}
+
+async function translateDiscoveredBlocks(options) {
+  if (PIT_STATE.running) {
+    return;
+  }
+
+  const blocks = collectTranslationBlocks(document.body, {
+    minChars: Number(options.minChars || 4)
+  });
+  const orderedBlocks = prioritizeBlocks(blocks, true).slice(0, 40);
+  if (orderedBlocks.length === 0) {
+    return;
+  }
+
+  PIT_STATE.running = true;
+  PIT_STATE.cancelRequested = false;
+  showOverlay();
+  updateFloatingState("running");
+
+  try {
+    const translated = await translateBlocks(orderedBlocks, { ...options, clearPrevious: false }, "Updating");
+    if (translated > 0) {
+      PIT_STATE.translated = true;
+      setFloatingStatus(`Added: ${translated}`);
+      updateOverlay(`Done. Added ${translated} text blocks.`, true);
+    }
+  } finally {
+    PIT_STATE.running = false;
+    updateFloatingState();
+  }
 }
 
 function normalizeTranslationMap(batch, translations) {
