@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spark Translate</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Spark Translate</h1>
+          <p id="subtitle">Local Codex bridge</p>
+        </div>
+        <span id="health" class="health">Checking</span>
+      </header>
+
+      <section id="serverPanel" class="panel">
+        <div>
+          <span class="label">Server</span>
+          <strong id="serverState">Checking...</strong>
+        </div>
+        <span id="latency" class="meta">--</span>
+      </section>
+
+      <button id="translate" class="primary">Translate Page</button>
+
+      <div class="actions">
+        <button id="clear" class="secondary">Clear</button>
+        <button id="recheck" class="secondary">Recheck</button>
+      </div>
+
+      <label>
+        Target
+        <input id="targetLanguage" value="中文" autocomplete="off">
+      </label>
+
+      <label>
+        Mode
+        <select id="mode">
+          <option value="bilingual">Bilingual</option>
+          <option value="replace">Replace original</option>
+        </select>
+      </label>
+
+      <details>
+        <summary>Advanced</summary>
+        <label>
+          Local server
+          <input id="endpoint" value="http://127.0.0.1:8787" autocomplete="off">
+        </label>
+        <label class="checkbox">
+          <input id="clearPrevious" type="checkbox" checked>
+          Clear before translating
+        </label>
+        <label class="checkbox">
+          <input id="viewportFirst" type="checkbox" checked>
+          Translate visible text first
+        </label>
+        <label class="checkbox">
+          <input id="showFloatingButton" type="checkbox" checked>
+          Show floating button
+        </label>
+      </details>
+
+      <section id="offlineHelp" class="offline" hidden>
+        <p>Start the local server, then recheck.</p>
+        <button id="copyCommand" class="secondary">Copy Start Command</button>
+      </section>
+
+      <p id="status" role="status"></p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
