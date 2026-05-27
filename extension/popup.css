@@ -125,6 +125,10 @@ select {
   color: #121417;
 }
 
+.custom-language {
+  margin-top: 2px;
+}
+
 .checkbox {
   display: flex;
   align-items: center;

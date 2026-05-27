@@ -7,6 +7,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const PORT = Number(process.env.PORT || 8787);
+const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
 const TRANSLATOR_BACKEND = (process.env.TRANSLATOR_BACKEND || "codex-app").toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -58,7 +59,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const items = validateItems(body.items || body.texts);
       const texts = items.map((item) => item.text);
-      const targetLanguage = String(body.targetLanguage || "中文").trim() || "中文";
+      const targetLanguage = String(body.targetLanguage || DEFAULT_TARGET_LANGUAGE).trim() || DEFAULT_TARGET_LANGUAGE;
       const requestId = createRequestId();
       const startedAt = Date.now();
       logInfo(`[${requestId}] translate start: ${items.length} items -> ${targetLanguage}`);
@@ -189,7 +190,7 @@ class CodexAppClient {
   async prewarm() {
     await this.translate({
       items: [{ id: "warmup", index: 0, tag: "p", path: "warmup", text: "warmup" }],
-      targetLanguage: "中文",
+      targetLanguage: DEFAULT_TARGET_LANGUAGE,
       requestId: "warmup"
     });
     this.warm = true;

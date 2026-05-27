@@ -33,7 +33,26 @@
 
       <label>
         Target
-        <input id="targetLanguage" value="中文" autocomplete="off">
+        <select id="targetLanguage">
+          <option value="Chinese (Simplified)">Chinese (Simplified)</option>
+          <option value="Chinese (Traditional)">Chinese (Traditional)</option>
+          <option value="English">English</option>
+          <option value="Japanese">Japanese</option>
+          <option value="Korean">Korean</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+          <option value="Spanish">Spanish</option>
+          <option value="Portuguese">Portuguese</option>
+          <option value="Italian">Italian</option>
+          <option value="Russian">Russian</option>
+          <option value="Arabic">Arabic</option>
+          <option value="Hindi">Hindi</option>
+          <option value="Vietnamese">Vietnamese</option>
+          <option value="Thai">Thai</option>
+          <option value="Indonesian">Indonesian</option>
+          <option value="__custom__">Custom...</option>
+        </select>
+        <input id="customTargetLanguage" class="custom-language" placeholder="e.g. Polish, Dutch, Brazilian Portuguese" autocomplete="off" hidden>
       </label>
 
       <label>

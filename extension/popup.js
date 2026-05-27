@@ -5,8 +5,22 @@ const START_COMMAND = [
   "npm start"
 ].join("\n");
 
+const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
+const LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
+  ["中文", "Chinese (Simplified)"],
+  ["简体中文", "Chinese (Simplified)"],
+  ["繁体中文", "Chinese (Traditional)"],
+  ["英文", "English"],
+  ["英语", "English"],
+  ["日文", "Japanese"],
+  ["日语", "Japanese"],
+  ["韩文", "Korean"],
+  ["韩语", "Korean"]
+]);
+
 const fields = {
   targetLanguage: document.getElementById("targetLanguage"),
+  customTargetLanguage: document.getElementById("customTargetLanguage"),
   endpoint: document.getElementById("endpoint"),
   mode: document.getElementById("mode"),
   clearPrevious: document.getElementById("clearPrevious"),
@@ -27,7 +41,7 @@ init();
 
 async function init() {
   const saved = await chrome.storage.local.get({
-    targetLanguage: "中文",
+    targetLanguage: DEFAULT_TARGET_LANGUAGE,
     endpoint: "http://127.0.0.1:8787",
     mode: "bilingual",
     clearPrevious: true,
@@ -35,19 +49,25 @@ async function init() {
     showFloatingButton: true
   });
 
-  fields.targetLanguage.value = saved.targetLanguage;
+  setTargetLanguage(saved.targetLanguage);
   fields.endpoint.value = saved.endpoint;
   fields.mode.value = saved.mode;
   fields.clearPrevious.checked = saved.clearPrevious;
   fields.viewportFirst.checked = saved.viewportFirst;
   fields.showFloatingButton.checked = saved.showFloatingButton;
+  await chrome.storage.local.set(readSettings());
 
   fields.translate.addEventListener("click", translateCurrentTab);
   fields.clear.addEventListener("click", clearCurrentTab);
   fields.recheck.addEventListener("click", checkHealth);
   fields.copyCommand.addEventListener("click", copyStartCommand);
 
-  [fields.targetLanguage, fields.endpoint, fields.mode, fields.clearPrevious, fields.viewportFirst, fields.showFloatingButton].forEach((field) => {
+  fields.targetLanguage.addEventListener("change", () => {
+    updateCustomLanguageVisibility();
+    saveSettings();
+  });
+
+  [fields.customTargetLanguage, fields.endpoint, fields.mode, fields.clearPrevious, fields.viewportFirst, fields.showFloatingButton].forEach((field) => {
     field.addEventListener("change", saveSettings);
     field.addEventListener("input", saveSettings);
   });
@@ -137,7 +157,7 @@ async function clearCurrentTab() {
 
 function readSettings() {
   return {
-    targetLanguage: fields.targetLanguage.value.trim() || "中文",
+    targetLanguage: readTargetLanguage(),
     endpoint: normalizeEndpoint(fields.endpoint.value.trim() || "http://127.0.0.1:8787"),
     mode: fields.mode.value,
     clearPrevious: fields.clearPrevious.checked,
@@ -146,6 +166,46 @@ function readSettings() {
     batchSize: 24,
     minChars: 4
   };
+}
+
+function setTargetLanguage(value) {
+  const normalized = normalizeTargetLanguage(value);
+  const option = Array.from(fields.targetLanguage.options).find((item) => item.value === normalized);
+
+  if (option) {
+    fields.targetLanguage.value = normalized;
+    fields.customTargetLanguage.value = "";
+  } else {
+    fields.targetLanguage.value = "__custom__";
+    fields.customTargetLanguage.value = normalized;
+  }
+
+  updateCustomLanguageVisibility();
+}
+
+function readTargetLanguage() {
+  if (fields.targetLanguage.value === "__custom__") {
+    return normalizeTargetLanguage(fields.customTargetLanguage.value);
+  }
+
+  return normalizeTargetLanguage(fields.targetLanguage.value);
+}
+
+function normalizeTargetLanguage(value) {
+  const language = String(value || "").trim();
+  if (!language) {
+    return DEFAULT_TARGET_LANGUAGE;
+  }
+
+  return LEGACY_TARGET_LANGUAGE_ALIASES.get(language) || language;
+}
+
+function updateCustomLanguageVisibility() {
+  const custom = fields.targetLanguage.value === "__custom__";
+  fields.customTargetLanguage.hidden = !custom;
+  if (custom && !fields.customTargetLanguage.value.trim()) {
+    fields.customTargetLanguage.value = "";
+  }
 }
 
 async function getActiveTab() {
