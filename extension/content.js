@@ -170,7 +170,7 @@ function collectTranslationBlocks(root, options) {
   const blocks = [];
 
   root.querySelectorAll(`${semanticSelector},${fallbackSelector}`).forEach((element) => {
-    if (seen.has(element) || shouldSkipElement(element) || hasExistingTranslation(element) || shouldPreferChildBlocks(element) || !isVisible(element)) {
+    if (seen.has(element) || shouldSkipElement(element) || hasExistingTranslation(element) || shouldPreferChildBlocks(element) || !isVisible(element) || isAssistiveOnlyElement(element)) {
       return;
     }
 
@@ -251,6 +251,34 @@ function isVisible(element) {
   return rect.width > 0 && rect.height > 0;
 }
 
+function isAssistiveOnlyElement(element) {
+  const style = window.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  const className = typeof element.className === "string" ? element.className : "";
+
+  if (element.getAttribute("aria-hidden") === "true") {
+    return true;
+  }
+
+  if (/\b(sr-only|visually-hidden|screen-reader|a11y|offscreen)\b/i.test(className)) {
+    return true;
+  }
+
+  if (rect.width <= 2 && rect.height <= 2) {
+    return true;
+  }
+
+  if (style.clip !== "auto" || style.clipPath !== "none") {
+    return true;
+  }
+
+  if (style.position === "absolute" && style.overflow === "hidden" && (Number.parseFloat(style.width) <= 2 || Number.parseFloat(style.height) <= 2)) {
+    return true;
+  }
+
+  return false;
+}
+
 function isInViewport(rect) {
   return rect.bottom >= 0 && rect.top <= window.innerHeight && rect.right >= 0 && rect.left <= window.innerWidth;
 }
@@ -307,7 +335,7 @@ function isLikelyChromeText(element, text) {
     "terms of service",
     "privacy policy",
     "cookie policy"
-  ].includes(lowered);
+  ].includes(lowered) || lowered.includes("keyboard shortcuts") || lowered.includes("press question mark");
 }
 
 function applyTranslations(batch, translations, mode) {
