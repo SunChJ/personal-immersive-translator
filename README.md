@@ -9,8 +9,10 @@ Personal Immersive Translator is a small personal Chrome extension for translati
 ## Features
 
 - Translate the current page from a Chrome extension.
-- Floating draggable `译` button with quick actions.
+- Choose a common target language or enter any custom language name.
+- Floating draggable translate button with quick actions.
 - Snap the floating button to the left or right edge of the page.
+- Use the same core controls from either the toolbar popup or the floating menu.
 - Translate visible content first for faster perceived response.
 - Insert translations block-by-block instead of mixing text inline.
 - Match translations back to DOM blocks using stable `pitId` anchors.
@@ -72,14 +74,16 @@ Chrome internal pages such as `chrome://extensions` cannot be translated because
 
 ## Floating Button
 
-The extension injects a small floating `译` button on normal web pages.
+The extension injects a small floating translate button on normal web pages.
 
 - Drag it to either edge of the page to snap it there.
-- Click it to open quick actions.
-- Use Translate, Clear, or Hide Floating.
+- Left-click it to toggle translated/original content.
+- Right-click it to open the floating menu with server status, target language, mode, and quick actions.
 - If hidden, reopen the extension popup and enable `Advanced -> Show floating button`.
 
 ## Configuration
+
+The popup includes common targets such as Chinese, English, Japanese, Korean, French, German, Spanish, Portuguese, Italian, Russian, Arabic, Hindi, Vietnamese, Thai, and Indonesian. Choose `Custom...` to enter any other target language or locale, for example `Dutch` or `Brazilian Portuguese`.
 
 The default backend is the persistent Codex app-server mode:
 

@@ -1,9 +1,12 @@
+const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== "translate-batch") {
+  if (!message || !["translate-batch", "check-health"].includes(message.type)) {
     return false;
   }
 
-  translateBatch(message)
+  const task = message.type === "translate-batch" ? translateBatch(message) : checkHealth(message);
+  task
     .then((payload) => sendResponse({ ok: true, ...payload }))
     .catch((error) => {
       sendResponse({
@@ -25,7 +28,7 @@ async function translateBatch(message) {
     body: JSON.stringify({
       items: message.items,
       texts: message.texts,
-      targetLanguage: message.targetLanguage || "中文",
+      targetLanguage: message.targetLanguage || DEFAULT_TARGET_LANGUAGE,
       sourceUrl: message.sourceUrl || ""
     })
   });
@@ -47,6 +50,16 @@ async function translateBatch(message) {
   }
 
   return { translations: body.translations };
+}
+
+async function checkHealth(message) {
+  const endpoint = normalizeEndpoint(message.endpoint || "http://127.0.0.1:8787");
+  const response = await fetch(`${endpoint}/health`);
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(body.error || `Local proxy failed with HTTP ${response.status}`);
+  }
+  return { health: body };
 }
 
 function normalizeEndpoint(endpoint) {
