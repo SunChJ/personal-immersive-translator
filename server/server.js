@@ -276,6 +276,7 @@ class CodexAppClient {
     const prompt = [
       `Translate each item into ${targetLanguage}.`,
       "Preserve names, numbers, code-like tokens, links, and formatting intent.",
+      "Preserve paragraph breaks and newline structure from each input text.",
       "Return only JSON matching the schema.",
       "Each translation object must keep the exact same id and index as the input item.",
       "Do not add, remove, split, merge, or reorder items.",
@@ -442,6 +443,7 @@ async function translateItemsWithCodex({ items, targetLanguage, requestId }) {
     "You are a deterministic webpage translation engine.",
     `Translate each item into ${targetLanguage}.`,
     "Preserve names, numbers, code-like tokens, links, and formatting intent.",
+    "Preserve paragraph breaks and newline structure from each input text.",
     "Return only JSON matching the provided schema.",
     "Each translation object must keep the exact same id and index as the input item.",
     "Do not add, remove, split, merge, or reorder items.",
@@ -503,7 +505,7 @@ async function translateItemsWithOpenAI({ items, targetLanguage, requestId }) {
         {
           role: "system",
           content:
-            "You are a precise webpage translation engine. Translate each input item into the target language. Preserve names, numbers, code-like tokens, links, and formatting intent. Return only strict JSON with this shape: {\"translations\":[{\"id\":\"pit-abc-000001\",\"index\":0,\"text\":\"...\"}]}. Each translation object must keep the exact same id and index as the input item. Do not add, remove, split, merge, or reorder items."
+            "You are a precise webpage translation engine. Translate each input item into the target language. Preserve names, numbers, code-like tokens, links, formatting intent, paragraph breaks, and newline structure. Return only strict JSON with this shape: {\"translations\":[{\"id\":\"pit-abc-000001\",\"index\":0,\"text\":\"...\"}]}. Each translation object must keep the exact same id and index as the input item. Do not add, remove, split, merge, or reorder items."
         },
         {
           role: "user",

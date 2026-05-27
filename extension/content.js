@@ -649,8 +649,12 @@ function extractInlineReadableText(node, rootElement) {
 }
 
 function extractReadableText(element) {
+  if (element.matches("[data-testid='tweetText']")) {
+    return normalizeReadableText(element.innerText || element.textContent || "");
+  }
+
   const text = extractReadableTextFromNode(element, element);
-  return normalizeText(text);
+  return normalizeReadableText(text);
 }
 
 function extractReadableTextFromNode(node, rootElement) {
@@ -1222,6 +1226,18 @@ function normalizeText(text) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function normalizeReadableText(text) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .split("\n")
+    .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+|\n+$/g, "")
+    .trim();
+}
+
 function isMostlyPunctuation(text) {
   const meaningful = text.replace(/[\s\p{P}\p{S}\d]/gu, "");
   return meaningful.length < 2;
@@ -1741,7 +1757,7 @@ function injectStyles() {
       text-decoration-style: dashed;
       text-decoration-thickness: 1px;
       text-underline-offset: 0.18em;
-      white-space: normal;
+      white-space: pre-line;
       word-break: normal;
       overflow-wrap: anywhere;
       transition: opacity 140ms ease;

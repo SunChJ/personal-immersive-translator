@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 - 2026-05-27
+
+- Preserved paragraph breaks for long social posts and multi-paragraph text blocks.
+- Rendered translation blocks with newline-aware whitespace so translated paragraphs do not collapse together.
+
 ## 0.2.2 - 2026-05-27
 
 - Skipped navigation bars, action links, and dense interactive UI containers during page translation.
