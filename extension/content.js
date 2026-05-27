@@ -116,7 +116,7 @@ async function translatePage(options) {
 }
 
 function collectTranslationBlocks(root, options) {
-  const selector = [
+  const semanticSelector = [
     "article h1",
     "article h2",
     "article h3",
@@ -157,17 +157,33 @@ function collectTranslationBlocks(root, options) {
     "dt",
     "dd"
   ].join(",");
+  const fallbackSelector = [
+    "article [data-testid='tweetText']",
+    "article [dir='auto']",
+    "article [lang]",
+    "main [data-testid='tweetText']",
+    "main [dir='auto']",
+    "main [lang]"
+  ].join(",");
 
   const seen = new Set();
   const blocks = [];
 
-  root.querySelectorAll(selector).forEach((element) => {
+  root.querySelectorAll(`${semanticSelector},${fallbackSelector}`).forEach((element) => {
     if (seen.has(element) || shouldSkipElement(element) || hasExistingTranslation(element) || shouldPreferChildBlocks(element) || !isVisible(element)) {
       return;
     }
 
     const text = normalizeText(element.innerText || element.textContent || "");
-    if (text.length < options.minChars || isMostlyPunctuation(text)) {
+    if (text.length < options.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text)) {
+      return;
+    }
+
+    if (isFallbackTextElement(element) && hasBetterTextAncestor(element, seen)) {
+      return;
+    }
+
+    if (hasCollectedDescendant(element, seen)) {
       return;
     }
 
@@ -245,11 +261,53 @@ function hasExistingTranslation(node) {
 }
 
 function shouldPreferChildBlocks(element) {
-  if (!element.matches("blockquote, dd, li")) {
+  if (!element.matches("blockquote, dd, li, [role='article']")) {
     return false;
   }
 
-  return Boolean(element.querySelector("p, h1, h2, h3, h4, h5, h6"));
+  return Boolean(element.querySelector("p, h1, h2, h3, h4, h5, h6, [data-testid='tweetText'], [dir='auto'][lang]"));
+}
+
+function isFallbackTextElement(element) {
+  return Boolean(element.matches("[data-testid='tweetText'], [dir='auto'], [lang]"));
+}
+
+function hasBetterTextAncestor(element, seen) {
+  const ancestor = element.parentElement?.closest("[data-testid='tweetText'], [dir='auto'][lang], p, li, blockquote");
+  if (!ancestor || ancestor === element || !seen.has(ancestor) || shouldSkipElement(ancestor) || hasExistingTranslation(ancestor) || !isVisible(ancestor)) {
+    return false;
+  }
+
+  const ancestorText = normalizeText(ancestor.innerText || ancestor.textContent || "");
+  const elementText = normalizeText(element.innerText || element.textContent || "");
+  return ancestorText === elementText || ancestorText.length <= elementText.length + 12;
+}
+
+function hasCollectedDescendant(element, seen) {
+  for (const collected of seen) {
+    if (element !== collected && element.contains(collected)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLikelyChromeText(element, text) {
+  if (element.closest("nav, aside, header, footer, [role='navigation'], [role='search'], [aria-label='Timeline: Trending now']")) {
+    return text.length < 80;
+  }
+
+  const lowered = text.toLowerCase();
+  return [
+    "search",
+    "relevant people",
+    "what’s happening",
+    "what's happening",
+    "show more",
+    "terms of service",
+    "privacy policy",
+    "cookie policy"
+  ].includes(lowered);
 }
 
 function applyTranslations(batch, translations, mode) {
