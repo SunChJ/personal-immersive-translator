@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 - 2026-05-27
+
+- Skipped navigation bars, action links, and dense interactive UI containers during page translation.
+- Prevented bilingual translation blocks from being inserted into navbar/menu layouts.
+
 ## 0.2.1 - 2026-05-27
 
 - Removed the bottom-right page status toast to reduce reading distraction.

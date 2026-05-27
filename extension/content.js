@@ -719,6 +719,10 @@ function isLikelyChromeText(element, text) {
     return text.length < 80;
   }
 
+  if (isLikelyNavigationOrActionElement(element, text)) {
+    return true;
+  }
+
   const lowered = text.toLowerCase();
   return [
     "search",
@@ -730,6 +734,81 @@ function isLikelyChromeText(element, text) {
     "privacy policy",
     "cookie policy"
   ].includes(lowered) || lowered.includes("keyboard shortcuts") || lowered.includes("press question mark");
+}
+
+function isLikelyNavigationOrActionElement(element, text) {
+  if (text.length > 120) {
+    return false;
+  }
+
+  if (isShortInteractiveLabel(element, text)) {
+    return true;
+  }
+
+  const chromeAncestor = closestChromeLikeAncestor(element);
+  if (chromeAncestor && text.length < 90) {
+    return true;
+  }
+
+  return isDenseInteractiveContainer(element, text);
+}
+
+function isShortInteractiveLabel(element, text) {
+  if (!element.matches("a, button, [role='link'], [role='button'], [role='menuitem'], [role='tab']")) {
+    return false;
+  }
+
+  return text.length <= 36 && !looksLikeSentence(text);
+}
+
+function closestChromeLikeAncestor(element) {
+  let current = element;
+  let depth = 0;
+
+  while (current && current !== document.body && depth < 7) {
+    if (hasChromeLikeDescriptor(current)) {
+      return current;
+    }
+
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return null;
+}
+
+function hasChromeLikeDescriptor(element) {
+  const descriptor = [
+    element.id || "",
+    typeof element.className === "string" ? element.className : "",
+    element.getAttribute("role") || "",
+    element.getAttribute("aria-label") || ""
+  ].join(" ");
+
+  return /(^|[\s_-])(appbar|breadcrumb|button|cta|download|footer|header|login|menu|menubar|nav|navbar|navigation|navlink|pagination|sidebar|signedout|tabbar|tabs|toolbar|topbar)([\s_-]|$)/i.test(descriptor);
+}
+
+function isDenseInteractiveContainer(element, text) {
+  if (text.length > 90 || element.matches("article, main, section")) {
+    return false;
+  }
+
+  const interactiveCount = element.querySelectorAll("a, button, [role='link'], [role='button'], [role='menuitem'], [role='tab']").length;
+  if (interactiveCount < 2) {
+    return false;
+  }
+
+  const paragraphCount = element.querySelectorAll("p, blockquote, li, h1, h2, h3, h4, h5, h6").length;
+  return paragraphCount === 0 || interactiveCount >= paragraphCount;
+}
+
+function looksLikeSentence(text) {
+  const trimmed = text.trim();
+  if (trimmed.length > 48) {
+    return true;
+  }
+
+  return /[.!?。！？]\s*$/.test(trimmed) || /\s+\S+\s+\S+\s+\S+/.test(trimmed);
 }
 
 function isBoilerplateText(text) {
