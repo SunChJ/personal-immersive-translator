@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - 2026-05-27
+
+- Removed the bottom-right page status toast to reduce reading distraction.
+- Kept translation progress and errors in the floating control and popup surfaces.
+
 ## 0.2.0 - 2026-05-27
 
 - Added international target language controls with custom language support.

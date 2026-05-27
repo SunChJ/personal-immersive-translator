@@ -11,8 +11,7 @@ const PIT_STATE = {
   lazyTimer: null,
   translated: false,
   nextBlockId: 1,
-  sessionId: createShortId(),
-  overlay: null
+  sessionId: createShortId()
 };
 
 const PIT_DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
@@ -202,7 +201,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   translatePage(message.options || {})
     .then((summary) => sendResponse({ ok: true, summary }))
     .catch((error) => {
-      updateOverlay(error instanceof Error ? error.message : String(error), true);
+      setFloatingStatus("Failed");
       sendResponse({
         ok: false,
         error: error instanceof Error ? error.message : String(error)
@@ -223,7 +222,6 @@ async function translatePage(options) {
   PIT_STATE.running = true;
   PIT_STATE.cancelRequested = false;
   injectStyles();
-  showOverlay();
 
   try {
     if (options.clearPrevious) {
@@ -239,7 +237,7 @@ async function translatePage(options) {
     const orderedBlocks = prioritizeBlocks(blocks, options.viewportFirst !== false);
 
     if (orderedBlocks.length === 0) {
-      updateOverlay("No translatable visible text found.", true);
+      setFloatingStatus("No text found");
       return { translated: 0, total: 0 };
     }
 
@@ -250,7 +248,6 @@ async function translatePage(options) {
       startLazyTranslationObserver(deferred, options);
     }
 
-    updateOverlay(deferred.length > 0 ? `Done. Translated ${translated} now, ${deferred.length} queued.` : `Done. Translated ${translated} text blocks.`, true);
     PIT_STATE.translated = translated > 0;
     updateFloatingState();
     setFloatingStatus(deferred.length > 0 ? `Done: ${translated}, queued ${deferred.length}` : `Done: ${translated}`);
@@ -303,12 +300,12 @@ async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translat
     for (let offset = 0; offset < orderedBlocks.length; offset += batchSize) {
       if (PIT_STATE.cancelRequested) {
         removePendingTranslationSurfaces(orderedBlocks, mode);
-        updateOverlay(`Stopped after ${translated}/${orderedBlocks.length}.`, true);
+        setFloatingStatus(`Stopped: ${translated}/${orderedBlocks.length}`);
         return translated;
       }
 
       const batch = orderedBlocks.slice(offset, offset + batchSize);
-      updateOverlay(`${overlayPrefix} ${offset + 1}-${Math.min(offset + batch.length, orderedBlocks.length)} / ${orderedBlocks.length}...`);
+      setFloatingStatus(`${overlayPrefix} ${offset + 1}-${Math.min(offset + batch.length, orderedBlocks.length)} / ${orderedBlocks.length}`);
 
       const response = await chrome.runtime.sendMessage({
         type: "translate-batch",
@@ -519,8 +516,7 @@ function shouldSkipElement(element) {
         "[translate='no']",
         ".notranslate",
         ".pit-translation",
-        "#pit-floating",
-        "#pit-status"
+        "#pit-floating"
       ].join(",")
     )
   );
@@ -981,7 +977,6 @@ function queueLazyTranslation(entry, options) {
   PIT_STATE.lazyTimer = window.setTimeout(() => {
     flushLazyTranslationQueue(options).catch((error) => {
       setFloatingStatus("Update failed");
-      updateOverlay(error instanceof Error ? error.message : String(error), true);
     });
   }, 120);
 }
@@ -992,7 +987,6 @@ async function flushLazyTranslationQueue(options) {
       PIT_STATE.lazyTimer = window.setTimeout(() => {
         flushLazyTranslationQueue(options).catch((error) => {
           setFloatingStatus("Update failed");
-          updateOverlay(error instanceof Error ? error.message : String(error), true);
         });
       }, 500);
     }
@@ -1007,7 +1001,6 @@ async function flushLazyTranslationQueue(options) {
 
   PIT_STATE.running = true;
   PIT_STATE.cancelRequested = false;
-  showOverlay();
   updateFloatingState("running");
 
   try {
@@ -1015,7 +1008,6 @@ async function flushLazyTranslationQueue(options) {
     if (translated > 0) {
       PIT_STATE.translated = true;
       setFloatingStatus(`Added: ${translated}`);
-      updateOverlay(`Done. Added ${translated} nearby text blocks.`, true);
     }
   } finally {
     PIT_STATE.running = false;
@@ -1026,7 +1018,6 @@ async function flushLazyTranslationQueue(options) {
     PIT_STATE.lazyTimer = window.setTimeout(() => {
       flushLazyTranslationQueue(options).catch((error) => {
         setFloatingStatus("Update failed");
-        updateOverlay(error instanceof Error ? error.message : String(error), true);
       });
     }, 120);
   }
@@ -1079,7 +1070,6 @@ function startDynamicTranslationObserver(options) {
     PIT_STATE.dynamicTimer = window.setTimeout(() => {
       translateDiscoveredBlocks(options).catch((error) => {
         setFloatingStatus("Update failed");
-        updateOverlay(error instanceof Error ? error.message : String(error), true);
       });
     }, 900);
   });
@@ -1115,7 +1105,6 @@ async function translateDiscoveredBlocks(options) {
 
   PIT_STATE.running = true;
   PIT_STATE.cancelRequested = false;
-  showOverlay();
   updateFloatingState("running");
 
   try {
@@ -1123,7 +1112,6 @@ async function translateDiscoveredBlocks(options) {
     if (translated > 0) {
       PIT_STATE.translated = true;
       setFloatingStatus(`Added: ${translated}`);
-      updateOverlay(`Done. Added ${translated} text blocks.`, true);
     }
   } finally {
     PIT_STATE.running = false;
@@ -1549,7 +1537,6 @@ async function translateFromFloating() {
   } catch (error) {
     updateFloatingState();
     setFloatingStatus("Failed");
-    updateOverlay(error instanceof Error ? error.message : String(error), true);
   }
 }
 
@@ -1947,54 +1934,6 @@ function injectStyles() {
       font-size: 12px;
     }
 
-    #pit-status {
-      position: fixed;
-      right: 16px;
-      bottom: 16px;
-      z-index: 2147483647;
-      max-width: min(360px, calc(100vw - 32px));
-      padding: 10px 12px;
-      border: 1px solid rgba(17, 24, 39, 0.14);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.96);
-      box-shadow: 0 10px 28px rgba(17, 24, 39, 0.18);
-      color: #111827;
-      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-
-    #pit-status[data-error="true"] {
-      border-color: rgba(185, 28, 28, 0.28);
-      color: #991b1b;
-    }
   `;
   document.documentElement.appendChild(style);
-}
-
-function showOverlay() {
-  let overlay = document.getElementById("pit-status");
-  if (!overlay) {
-    overlay = document.createElement("div");
-    overlay.id = "pit-status";
-    overlay.dataset.pitSkip = "true";
-    document.documentElement.appendChild(overlay);
-  }
-
-  PIT_STATE.overlay = overlay;
-  updateOverlay("Preparing translation...");
-}
-
-function updateOverlay(text, done = false) {
-  if (!PIT_STATE.overlay) {
-    return;
-  }
-
-  PIT_STATE.overlay.dataset.error = String(text.toLowerCase().includes("error") || text.toLowerCase().includes("failed"));
-  PIT_STATE.overlay.textContent = text;
-
-  if (done) {
-    window.setTimeout(() => {
-      PIT_STATE.overlay?.remove();
-      PIT_STATE.overlay = null;
-    }, 4500);
-  }
 }
