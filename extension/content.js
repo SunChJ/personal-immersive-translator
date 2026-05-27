@@ -3,6 +3,7 @@ const PIT_STATE = {
   cancelRequested: false,
   floating: null,
   floatingStatusTimer: null,
+  translated: false,
   nextBlockId: 1,
   sessionId: createShortId(),
   overlay: null
@@ -105,6 +106,8 @@ async function translatePage(options) {
     }
 
     updateOverlay(`Done. Translated ${translated} text blocks.`, true);
+    PIT_STATE.translated = translated > 0;
+    updateFloatingState();
     setFloatingStatus(`Done: ${translated}`);
     return { translated, total: orderedBlocks.length };
   } finally {
@@ -281,6 +284,8 @@ function applyTranslations(batch, translations, mode) {
 
 function clearTranslations() {
   document.querySelectorAll(".pit-translation").forEach((node) => node.remove());
+  PIT_STATE.translated = false;
+  updateFloatingState();
   setFloatingStatus("Cleared");
 }
 
@@ -397,11 +402,15 @@ function mountFloatingControl() {
   root.id = "pit-floating";
   root.dataset.pitSkip = "true";
   root.dataset.expanded = "false";
+  root.dataset.mode = PIT_STATE.translated ? "translated" : "idle";
   root.innerHTML = `
-    <button class="pit-fab" type="button" title="Spark Translate">译</button>
+    <button class="pit-fab" type="button" title="Left click: translate/original. Right click: menu">
+      <span class="pit-fab-label">${PIT_STATE.translated ? "原" : "译"}</span>
+      <span class="pit-fab-dot"></span>
+    </button>
     <div class="pit-floating-menu" role="menu">
       <div class="pit-floating-title">Spark Translate</div>
-      <button type="button" data-action="translate">Translate</button>
+      <button type="button" data-action="toggle">Translate / Original</button>
       <button type="button" data-action="clear">Clear</button>
       <button type="button" data-action="hide">Hide Floating</button>
       <div class="pit-floating-status">Ready</div>
@@ -478,7 +487,12 @@ function wireFloatingControl(root) {
     if (suppressClick) {
       return;
     }
-    toggleFloatingMenu(root);
+    toggleTranslationFromFloating();
+  });
+
+  fab.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    root.dataset.expanded = root.dataset.expanded === "true" ? "false" : "true";
   });
 
   root.querySelector(".pit-floating-menu").addEventListener("click", async (event) => {
@@ -488,8 +502,9 @@ function wireFloatingControl(root) {
     }
 
     const action = button.dataset.action;
-    if (action === "translate") {
-      await translateFromFloating();
+    root.dataset.expanded = "false";
+    if (action === "toggle") {
+      await toggleTranslationFromFloating();
     } else if (action === "clear") {
       clearTranslations();
     } else if (action === "hide") {
@@ -499,6 +514,20 @@ function wireFloatingControl(root) {
   });
 }
 
+async function toggleTranslationFromFloating() {
+  if (PIT_STATE.running) {
+    setFloatingStatus("Already running");
+    return;
+  }
+
+  if (hasPageTranslations()) {
+    clearTranslations();
+    return;
+  }
+
+  await translateFromFloating();
+}
+
 async function translateFromFloating() {
   if (PIT_STATE.running) {
     setFloatingStatus("Already running");
@@ -506,11 +535,15 @@ async function translateFromFloating() {
   }
 
   setFloatingStatus("Starting...");
+  updateFloatingState("running");
   try {
     const options = await readTranslationSettings();
     const summary = await translatePage(options);
+    PIT_STATE.translated = summary.translated > 0;
+    updateFloatingState();
     setFloatingStatus(`Done: ${summary.translated}`);
   } catch (error) {
+    updateFloatingState();
     setFloatingStatus("Failed");
     updateOverlay(error instanceof Error ? error.message : String(error), true);
   }
@@ -530,8 +563,22 @@ function readTranslationSettings() {
   }));
 }
 
-function toggleFloatingMenu(root) {
-  root.dataset.expanded = root.dataset.expanded === "true" ? "false" : "true";
+function hasPageTranslations() {
+  return Boolean(document.querySelector(".pit-translation"));
+}
+
+function updateFloatingState(forceMode) {
+  const root = PIT_STATE.floating;
+  if (!root) {
+    return;
+  }
+
+  const mode = forceMode || (hasPageTranslations() || PIT_STATE.translated ? "translated" : "idle");
+  const label = root.querySelector(".pit-fab-label");
+  root.dataset.mode = mode;
+  if (label) {
+    label.textContent = mode === "running" ? "…" : mode === "translated" ? "原" : "译";
+  }
 }
 
 function setFloatingStatus(text) {
@@ -629,6 +676,7 @@ function injectStyles() {
     }
 
     #pit-floating .pit-fab {
+      position: relative;
       display: grid;
       place-items: center;
       width: 48px;
@@ -641,6 +689,34 @@ function injectStyles() {
       cursor: grab;
       font: 700 18px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
       letter-spacing: 0;
+    }
+
+    #pit-floating[data-mode="translated"] .pit-fab {
+      background: #0f766e;
+    }
+
+    #pit-floating[data-mode="running"] .pit-fab {
+      background: #344054;
+      cursor: wait;
+    }
+
+    #pit-floating .pit-fab-dot {
+      position: absolute;
+      right: 5px;
+      bottom: 5px;
+      width: 9px;
+      height: 9px;
+      border: 2px solid #ffffff;
+      border-radius: 999px;
+      background: #98a2b3;
+    }
+
+    #pit-floating[data-mode="translated"] .pit-fab-dot {
+      background: #12b76a;
+    }
+
+    #pit-floating[data-mode="running"] .pit-fab-dot {
+      background: #fdb022;
     }
 
     #pit-floating[data-dragging="true"] .pit-fab {
