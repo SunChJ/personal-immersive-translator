@@ -2,7 +2,7 @@
 
 > A local-first Chrome page translator powered by your logged-in Codex CLI session.
 
-[中文文档](./README.zh-CN.md)
+[中文文档](./README.zh-CN.md) · [Changelog](./CHANGELOG.md)
 
 Personal Immersive Translator is a small personal Chrome extension for translating the current web page. It keeps credentials out of the browser by routing translation requests through a local Node.js server. By default, that server keeps a warm Codex app-server process and uses your ChatGPT/Codex login with `gpt-5.3-codex-spark`.
 
@@ -113,10 +113,15 @@ export CODEX_PREWARM=0
 ## Useful Commands
 
 ```bash
+npm run check:version
 npm run doctor
 npm run start:codex
 npm run start:api
 ```
+
+## Versioning
+
+The project uses semver. Keep `package.json`, `extension/manifest.json`, and `CHANGELOG.md` in sync for every release. Run `npm run check:version` before pushing a release-oriented change.
 
 ## Notes
 

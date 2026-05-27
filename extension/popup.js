@@ -34,7 +34,8 @@ const fields = {
   health: document.getElementById("health"),
   latency: document.getElementById("latency"),
   offlineHelp: document.getElementById("offlineHelp"),
-  serverState: document.getElementById("serverState")
+  serverState: document.getElementById("serverState"),
+  version: document.getElementById("version")
 };
 
 init();
@@ -55,6 +56,7 @@ async function init() {
   fields.clearPrevious.checked = saved.clearPrevious;
   fields.viewportFirst.checked = saved.viewportFirst;
   fields.showFloatingButton.checked = saved.showFloatingButton;
+  fields.version.textContent = `v${chrome.runtime.getManifest().version}`;
   await chrome.storage.local.set(readSettings());
 
   fields.translate.addEventListener("click", translateCurrentTab);

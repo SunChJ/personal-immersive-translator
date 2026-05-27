@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Personal Immersive Translator",
   "description": "Translate the current page through a local OpenAI proxy.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Translate this page"

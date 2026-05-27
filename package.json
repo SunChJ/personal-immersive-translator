@@ -1,9 +1,10 @@
 {
   "name": "personal-immersive-translator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A personal Chrome extension for translating the current page through a local OpenAI proxy.",
   "scripts": {
+    "check:version": "node scripts/check-version.js",
     "doctor": "node scripts/doctor.js",
     "start": "node server/server.js",
     "start:codex": "TRANSLATOR_BACKEND=codex-app CODEX_MODEL=gpt-5.3-codex-spark node server/server.js",

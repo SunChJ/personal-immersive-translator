@@ -2,7 +2,7 @@
 
 > 一个本地优先的 Chrome 页面翻译插件，通过已登录的 Codex CLI 使用 GPT-5.3-Codex-Spark。
 
-[English README](./README.md)
+[English README](./README.md) · [Changelog](./CHANGELOG.md)
 
 Personal Immersive Translator 是一个个人版页面翻译插件。Chrome 插件只负责采集页面文本和回填译文；真正的模型调用交给本机 Node.js server。默认情况下，server 会常驻一个 Codex app-server，并复用你已经通过 ChatGPT 登录的 Codex 会话。
 
@@ -112,10 +112,15 @@ export CODEX_PREWARM=0
 ## 常用命令
 
 ```bash
+npm run check:version
 npm run doctor
 npm run start:codex
 npm run start:api
 ```
+
+## 版本管理
+
+项目使用 semver。每次面向 release 的变更，都需要同步 `package.json`、`extension/manifest.json` 和 `CHANGELOG.md`。推送前运行 `npm run check:version`。
 
 ## 说明
 
