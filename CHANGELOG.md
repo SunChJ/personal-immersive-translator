@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4 - 2026-05-27
+
+- Added paragraph-level anchoring for multi-paragraph X/Twitter post bodies in bilingual mode.
+- Reduced reserved translation height for tweet segments so inserted translations stay close to their source paragraphs.
+
 ## 0.2.3 - 2026-05-27
 
 - Preserved paragraph breaks for long social posts and multi-paragraph text blocks.

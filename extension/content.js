@@ -232,7 +232,8 @@ async function translatePage(options) {
     stopLazyTranslationObserver();
 
     const blocks = collectTranslationBlocks(document.body, {
-      minChars: Number(options.minChars || 4)
+      minChars: Number(options.minChars || 4),
+      mode: options.mode || "bilingual"
     });
     const orderedBlocks = prioritizeBlocks(blocks, options.viewportFirst !== false);
 
@@ -343,6 +344,10 @@ function collectTranslationBlocks(root, options) {
   const textFingerprints = new Set();
   const minChars = Number(options.minChars || 4);
 
+  if (options.mode !== "replace") {
+    collectTweetTextSegments(root, { seen, blocks, textFingerprints, minChars });
+  }
+
   collectSiteRuleBlocks(root, { seen, blocks, textFingerprints, minChars });
 
   root.querySelectorAll(PIT_DIRECT_TEXT_SELECTOR).forEach((element) => {
@@ -392,6 +397,116 @@ function collectSiteRuleBlocks(root, context) {
       allowChildBlocks: true
     });
   });
+}
+
+function collectTweetTextSegments(root, context) {
+  root.querySelectorAll("[data-testid='tweetText']").forEach((element) => {
+    if (
+      context.seen.has(element) ||
+      shouldSkipElement(element) ||
+      hasExistingTranslation(element) ||
+      !isVisible(element) ||
+      isAssistiveOnlyElement(element)
+    ) {
+      return;
+    }
+
+    const segments = extractTweetTextSegments(element)
+      .map((segment, index) => ({
+        ...segment,
+        text: normalizeReadableText(segment.text),
+        index
+      }))
+      .filter((segment) => segment.text.length >= context.minChars && !isMostlyPunctuation(segment.text) && !isBoilerplateText(segment.text));
+
+    if (segments.length <= 1) {
+      return;
+    }
+
+    const baseId = ensurePitId(element);
+    let accepted = 0;
+
+    segments.forEach((segment) => {
+      const fingerprint = createTextFingerprint(segment.text);
+      if (context.textFingerprints.has(fingerprint)) {
+        return;
+      }
+
+      context.textFingerprints.add(fingerprint);
+      context.blocks.push({
+        element,
+        id: `${baseId}-seg-${String(segment.index + 1).padStart(3, "0")}`,
+        insertAfter: segment.anchor,
+        kind: "tweet-segment",
+        text: segment.text
+      });
+      accepted += 1;
+    });
+
+    if (accepted > 0) {
+      context.seen.add(element);
+      element.dataset.pitBlockKind = "tweet-segment";
+    }
+  });
+}
+
+function extractTweetTextSegments(element) {
+  const segments = [];
+  let text = "";
+  let anchor = null;
+  let brCount = 0;
+
+  const flush = () => {
+    const normalized = normalizeReadableText(text);
+    if (normalized && anchor) {
+      segments.push({ text: normalized, anchor });
+    }
+    text = "";
+    anchor = null;
+    brCount = 0;
+  };
+
+  const appendText = (value, nodeAnchor) => {
+    text += value;
+    anchor = nodeAnchor;
+    brCount = 0;
+  };
+
+  const visit = (node, directAnchor) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (node.nodeValue) {
+        appendText(node.nodeValue, directAnchor);
+      }
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE || !(node instanceof HTMLElement)) {
+      return;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    if (tagName === "br") {
+      brCount += 1;
+      anchor = directAnchor;
+      if (brCount >= 2) {
+        flush();
+      } else {
+        text += "\n";
+      }
+      return;
+    }
+
+    if (node !== element && shouldSkipElement(node)) {
+      return;
+    }
+
+    node.childNodes.forEach((child) => visit(child, directAnchor));
+  };
+
+  element.childNodes.forEach((child) => visit(child, child));
+  flush();
+
+  return segments;
 }
 
 function walkParagraphCandidates(root, visit) {
@@ -855,7 +970,7 @@ function prepareStableTranslationSurfaces(entries, mode) {
       return;
     }
 
-    const existingSlot = findTranslationSlot(entry.element);
+    const existingSlot = findTranslationSlot(entry);
     if (existingSlot) {
       entry.translationSlot = existingSlot;
       return;
@@ -867,7 +982,7 @@ function prepareStableTranslationSurfaces(entries, mode) {
     slot.setAttribute("aria-hidden", "true");
     applyInheritedTextStyle(entry.element, slot);
     slot.style.minHeight = estimateTranslationSlotHeight(entry);
-    insertTranslationSlot(entry.element, slot);
+    insertTranslationSlot(entry, slot);
     entry.translationSlot = slot;
   });
 }
@@ -886,7 +1001,12 @@ function removePendingTranslationSurfaces(entries, mode) {
   });
 }
 
-function findTranslationSlot(element) {
+function findTranslationSlot(entry) {
+  if (entry.kind === "tweet-segment") {
+    return entry.element.querySelector(`:scope > .pit-translation[data-pit-slot-id="${entry.id}"]`);
+  }
+
+  const element = entry.element;
   const sibling = element.nextElementSibling;
   if (sibling?.classList?.contains("pit-translation")) {
     return sibling;
@@ -896,7 +1016,15 @@ function findTranslationSlot(element) {
   return child || null;
 }
 
-function insertTranslationSlot(element, slot) {
+function insertTranslationSlot(entry, slot) {
+  slot.dataset.pitSlotId = entry.id;
+
+  if (entry.kind === "tweet-segment" && entry.insertAfter?.parentNode === entry.element) {
+    entry.element.insertBefore(slot, entry.insertAfter.nextSibling);
+    return;
+  }
+
+  const element = entry.element;
   const listParent = element.closest("li");
   if (element === listParent) {
     element.appendChild(slot);
@@ -942,6 +1070,16 @@ function estimateTranslationSlotHeight(entry) {
   const style = window.getComputedStyle(sourceElement);
   const rect = sourceElement.getBoundingClientRect();
   const lineHeight = readableLineHeight(style);
+
+  if (entry.kind === "tweet-segment") {
+    const fontSize = Number.parseFloat(style.fontSize);
+    const averageCharWidth = Number.isFinite(fontSize) ? fontSize * 0.58 : 9;
+    const availableWidth = Number.isFinite(rect.width) && rect.width > 0 ? rect.width : 520;
+    const charsPerLine = Math.max(18, Math.floor(availableWidth / averageCharWidth));
+    const estimatedLines = entry.text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+    return `${Math.ceil(Math.max(lineHeight, estimatedLines * lineHeight))}px`;
+  }
+
   const sourceHeight = Number.isFinite(rect.height) && rect.height > 0 ? rect.height : lineHeight;
   const estimated = Math.max(lineHeight, sourceHeight * 0.82);
   return `${Math.ceil(estimated)}px`;
@@ -988,7 +1126,7 @@ function applyTranslations(batch, translations, mode) {
     entry.element.dataset.pitTranslated = "true";
 
     if (!translationBlock.parentNode) {
-      insertTranslationSlot(entry.element, translationBlock);
+      insertTranslationSlot(entry, translationBlock);
     }
   });
 }
@@ -1179,7 +1317,8 @@ async function translateDiscoveredBlocks(options) {
   }
 
   const blocks = collectTranslationBlocks(document.body, {
-    minChars: Number(options.minChars || 4)
+    minChars: Number(options.minChars || 4),
+    mode: options.mode || "bilingual"
   });
   const orderedBlocks = prioritizeBlocks(blocks, true).slice(0, 40);
   if (orderedBlocks.length === 0) {
