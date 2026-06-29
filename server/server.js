@@ -17,14 +17,17 @@ const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.3-codex-spark";
 const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 120000);
 const CODEX_PREWARM = process.env.CODEX_PREWARM !== "0";
 const SCHEMA_PATH = path.join(__dirname, "translation.schema.json");
+const PACKAGE_PATH = path.join(__dirname, "..", "package.json");
 const TRANSLATION_SCHEMA = JSON.parse(fs.readFileSync(SCHEMA_PATH, "utf8"));
+const PACKAGE_VERSION = JSON.parse(fs.readFileSync(PACKAGE_PATH, "utf8")).version;
+const TRANSLATOR_TOKEN = process.env.TRANSLATOR_TOKEN || "pit-local-extension-token-v1";
 const CACHE_LIMIT = Number(process.env.TRANSLATION_CACHE_LIMIT || 1200);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const translationCache = new Map();
 let codexAppClient = null;
 
 const server = http.createServer(async (req, res) => {
-  setCorsHeaders(res);
+  setCorsHeaders(req, res);
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -36,19 +39,22 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
-      writeJson(res, 200, {
-        ok: TRANSLATOR_BACKEND.startsWith("codex") ? true : Boolean(OPENAI_API_KEY),
-        backend: TRANSLATOR_BACKEND,
-        model: TRANSLATOR_BACKEND.startsWith("codex") ? CODEX_MODEL : OPENAI_MODEL,
-        hasApiKey: Boolean(OPENAI_API_KEY),
-        cacheSize: translationCache.size,
-        warm: codexAppClient ? codexAppClient.warm : null,
-        lastLatencyMs: codexAppClient ? codexAppClient.lastLatencyMs : null
-      });
+      if (TRANSLATOR_BACKEND === "codex-app" && codexAppClient && !codexAppClient.isReady() && !codexAppClient.readyPromise) {
+        codexAppClient.ensureReady().catch((error) => {
+          logError(`health startup failed: ${error.message}`);
+        });
+      }
+
+      writeJson(res, 200, getHealthPayload());
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/translate") {
+      if (!isAuthorized(req)) {
+        writeJson(res, 403, { error: "Unauthorized local translation request." });
+        return;
+      }
+
       if (!TRANSLATOR_BACKEND.startsWith("codex") && !OPENAI_API_KEY) {
         writeJson(res, 500, {
           error: "OPENAI_API_KEY is not set in the local proxy environment."
@@ -58,7 +64,6 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readJson(req);
       const items = validateItems(body.items || body.texts);
-      const texts = items.map((item) => item.text);
       const targetLanguage = String(body.targetLanguage || DEFAULT_TARGET_LANGUAGE).trim() || DEFAULT_TARGET_LANGUAGE;
       const requestId = createRequestId();
       const startedAt = Date.now();
@@ -107,10 +112,49 @@ server.listen(PORT, "127.0.0.1", () => {
   }
 });
 
-function setCorsHeaders(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function setCorsHeaders(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (origin.startsWith("chrome-extension://")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-PIT-Token");
+}
+
+function isAuthorized(req) {
+  return req.headers["x-pit-token"] === TRANSLATOR_TOKEN;
+}
+
+function getHealthPayload() {
+  if (TRANSLATOR_BACKEND === "codex-app") {
+    const ready = Boolean(codexAppClient?.isReady());
+    const error = codexAppClient?.lastError || null;
+    return {
+      ok: ready && !error,
+      ready,
+      backend: TRANSLATOR_BACKEND,
+      model: CODEX_MODEL,
+      hasApiKey: Boolean(OPENAI_API_KEY),
+      cacheSize: translationCache.size,
+      warm: codexAppClient ? codexAppClient.warm : null,
+      lastLatencyMs: codexAppClient ? codexAppClient.lastLatencyMs : null,
+      error
+    };
+  }
+
+  return {
+    ok: TRANSLATOR_BACKEND === "codex" ? true : Boolean(OPENAI_API_KEY),
+    ready: TRANSLATOR_BACKEND === "codex" ? true : Boolean(OPENAI_API_KEY),
+    backend: TRANSLATOR_BACKEND,
+    model: TRANSLATOR_BACKEND.startsWith("codex") ? CODEX_MODEL : OPENAI_MODEL,
+    hasApiKey: Boolean(OPENAI_API_KEY),
+    cacheSize: translationCache.size,
+    warm: null,
+    lastLatencyMs: null
+  };
 }
 
 async function translateItems({ items, targetLanguage, requestId }) {
@@ -185,6 +229,7 @@ class CodexAppClient {
     this.recentStderr = "";
     this.threadId = null;
     this.warm = false;
+    this.lastError = null;
   }
 
   async prewarm() {
@@ -208,12 +253,17 @@ class CodexAppClient {
       return this.readyPromise;
     }
 
-    this.readyPromise = this.start();
+    this.readyPromise = this.start().catch((error) => {
+      this.readyPromise = null;
+      this.lastError = error.message;
+      throw error;
+    });
     return this.readyPromise;
   }
 
   async start() {
     logInfo("codex app-server starting");
+    this.lastError = null;
     this.child = spawn(
       CODEX_BIN,
       [
@@ -246,7 +296,7 @@ class CodexAppClient {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "personal-immersive-translator", version: "0.1.0" },
+      clientInfo: { name: "personal-immersive-translator", version: PACKAGE_VERSION },
       capabilities: {
         experimentalApi: true,
         requestAttestation: false,
@@ -265,7 +315,12 @@ class CodexAppClient {
     });
 
     this.threadId = response.result.thread.id;
+    this.lastError = null;
     logInfo(`codex app-server ready: thread ${this.threadId}`);
+  }
+
+  isReady() {
+    return Boolean(this.child && this.threadId);
   }
 
   async runTranslationTurn({ items, targetLanguage, requestId }) {
@@ -424,6 +479,8 @@ class CodexAppClient {
   }
 
   failAll(error) {
+    this.lastError = error instanceof Error ? error.message : String(error);
+
     for (const pending of this.pending.values()) {
       pending.reject(error);
     }

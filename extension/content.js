@@ -2,6 +2,7 @@ const PIT_STATE = {
   running: false,
   cancelRequested: false,
   dynamicObserver: null,
+  dynamicRoots: [],
   dynamicTimer: null,
   floating: null,
   floatingStatusTimer: null,
@@ -270,7 +271,7 @@ function splitImmediateTranslationBlocks(blocks, viewportFirst) {
   const deferred = [];
 
   blocks.forEach((entry) => {
-    const rect = entry.element.getBoundingClientRect();
+    const rect = getEntryRect(entry);
     if (isNearViewport(rect, PIT_LAZY_ROOT_MARGIN)) {
       immediate.push(entry);
     } else {
@@ -343,41 +344,107 @@ function collectTranslationBlocks(root, options) {
   const blocks = [];
   const textFingerprints = new Set();
   const minChars = Number(options.minChars || 4);
+  const context = {
+    seen,
+    blocks,
+    textFingerprints,
+    minChars,
+    measurements: createMeasurementCache(),
+    collectedElements: []
+  };
 
-  if (options.mode !== "replace") {
-    collectTweetTextSegments(root, { seen, blocks, textFingerprints, minChars });
+  try {
+    if (options.mode !== "replace") {
+      collectTweetTextSegments(root, context);
+    }
+
+    collectSiteRuleBlocks(root, context);
+
+    queryElementsIncludingRoot(root, PIT_DIRECT_TEXT_SELECTOR).forEach((element) => {
+      pushTranslationBlock(element, {
+        ...context,
+        kind: "semantic",
+        allowChildBlocks: false
+      });
+    });
+
+    walkParagraphCandidates(root, (element) => {
+      pushTranslationBlock(element, {
+        ...context,
+        kind: "walked",
+        allowChildBlocks: false
+      });
+    }, context.measurements);
+
+    return blocks.sort((a, b) => {
+      if (a.element === b.element) {
+        return 0;
+      }
+      return a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
+    });
+  } finally {
+    context.collectedElements.forEach((element) => {
+      delete element.dataset.pitCollected;
+    });
+  }
+}
+
+function queryElementsIncludingRoot(root, selector) {
+  const elements = [];
+  if (root instanceof HTMLElement && root.matches(selector)) {
+    elements.push(root);
+  }
+  if (root.querySelectorAll) {
+    elements.push(...root.querySelectorAll(selector));
+  }
+  return elements;
+}
+
+function createMeasurementCache() {
+  return {
+    rects: new WeakMap(),
+    styles: new WeakMap()
+  };
+}
+
+function getCachedStyle(element, measurements) {
+  if (!measurements) {
+    return window.getComputedStyle(element);
   }
 
-  collectSiteRuleBlocks(root, { seen, blocks, textFingerprints, minChars });
+  let style = measurements.styles.get(element);
+  if (!style) {
+    style = window.getComputedStyle(element);
+    measurements.styles.set(element, style);
+  }
+  return style;
+}
 
-  root.querySelectorAll(PIT_DIRECT_TEXT_SELECTOR).forEach((element) => {
-    pushTranslationBlock(element, {
-      seen,
-      blocks,
-      textFingerprints,
-      minChars,
-      kind: "semantic",
-      allowChildBlocks: false
-    });
-  });
+function getCachedRect(element, measurements) {
+  if (!measurements) {
+    return element.getBoundingClientRect();
+  }
 
-  walkParagraphCandidates(root, (element) => {
-    pushTranslationBlock(element, {
-      seen,
-      blocks,
-      textFingerprints,
-      minChars,
-      kind: "walked",
-      allowChildBlocks: false
-    });
-  });
+  let rect = measurements.rects.get(element);
+  if (!rect) {
+    rect = element.getBoundingClientRect();
+    measurements.rects.set(element, rect);
+  }
+  return rect;
+}
 
-  return blocks.sort((a, b) => {
-    if (a.element === b.element) {
-      return 0;
-    }
-    return a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
-  });
+function getEntryRect(entry) {
+  if (!entry.rect) {
+    entry.rect = entry.element.getBoundingClientRect();
+  }
+  return entry.rect;
+}
+
+function getEntryStyle(entry) {
+  if (!entry.style) {
+    entry.style = window.getComputedStyle(entry.element);
+  }
+  return entry.style;
 }
 
 function collectSiteRuleBlocks(root, context) {
@@ -386,7 +453,7 @@ function collectSiteRuleBlocks(root, context) {
     return;
   }
 
-  root.querySelectorAll(rule.selectors.join(",")).forEach((element) => {
+  queryElementsIncludingRoot(root, rule.selectors.join(",")).forEach((element) => {
     if (rule.skipSelectors.some((selector) => element.closest(selector))) {
       return;
     }
@@ -400,13 +467,13 @@ function collectSiteRuleBlocks(root, context) {
 }
 
 function collectTweetTextSegments(root, context) {
-  root.querySelectorAll("[data-testid='tweetText']").forEach((element) => {
+  queryElementsIncludingRoot(root, "[data-testid='tweetText']").forEach((element) => {
     if (
       context.seen.has(element) ||
       shouldSkipElement(element) ||
       hasExistingTranslation(element) ||
-      !isVisible(element) ||
-      isAssistiveOnlyElement(element)
+      !isVisible(element, context.measurements) ||
+      isAssistiveOnlyElement(element, context.measurements)
     ) {
       return;
     }
@@ -438,6 +505,8 @@ function collectTweetTextSegments(root, context) {
         id: `${baseId}-seg-${String(segment.index + 1).padStart(3, "0")}`,
         insertAfter: segment.anchor,
         kind: "tweet-segment",
+        rect: getCachedRect(element, context.measurements),
+        style: getCachedStyle(element, context.measurements),
         text: segment.text
       });
       accepted += 1;
@@ -445,6 +514,8 @@ function collectTweetTextSegments(root, context) {
 
     if (accepted > 0) {
       context.seen.add(element);
+      element.dataset.pitCollected = "true";
+      context.collectedElements.push(element);
       element.dataset.pitBlockKind = "tweet-segment";
     }
   });
@@ -509,7 +580,7 @@ function extractTweetTextSegments(element) {
   return segments;
 }
 
-function walkParagraphCandidates(root, visit) {
+function walkParagraphCandidates(root, visit, measurements) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
     acceptNode(node) {
       if (!(node instanceof HTMLElement)) {
@@ -526,14 +597,14 @@ function walkParagraphCandidates(root, visit) {
 
   let element = walker.currentNode;
   while (element) {
-    if (isParagraphCandidate(element)) {
+    if (isParagraphCandidate(element, measurements)) {
       visit(element);
     }
     element = walker.nextNode();
   }
 }
 
-function isParagraphCandidate(element) {
+function isParagraphCandidate(element, measurements) {
   if (!(element instanceof HTMLElement) || element.matches(PIT_DIRECT_TEXT_SELECTOR)) {
     return false;
   }
@@ -542,7 +613,7 @@ function isParagraphCandidate(element) {
     return true;
   }
 
-  const display = window.getComputedStyle(element).display;
+  const display = getCachedStyle(element, measurements).display;
   if (!PIT_BLOCK_DISPLAYS.has(display)) {
     return false;
   }
@@ -551,7 +622,7 @@ function isParagraphCandidate(element) {
     return false;
   }
 
-  return hasDirectReadableText(element);
+  return hasDirectReadableText(element, measurements);
 }
 
 function pushTranslationBlock(element, context) {
@@ -559,8 +630,8 @@ function pushTranslationBlock(element, context) {
     context.seen.has(element) ||
     shouldSkipElement(element) ||
     hasExistingTranslation(element) ||
-    !isVisible(element) ||
-    isAssistiveOnlyElement(element)
+    !isVisible(element, context.measurements) ||
+    isAssistiveOnlyElement(element, context.measurements)
   ) {
     return false;
   }
@@ -569,11 +640,11 @@ function pushTranslationBlock(element, context) {
     return false;
   }
 
-  if (hasCollectedAncestor(element, context.seen) || hasCollectedDescendant(element, context.seen)) {
+  if (hasCollectedAncestor(element, context.seen) || hasCollectedDescendant(element)) {
     return false;
   }
 
-  const text = extractReadableText(element);
+  const text = extractReadableText(element, context.measurements);
   if (text.length < context.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text)) {
     return false;
   }
@@ -589,8 +660,17 @@ function pushTranslationBlock(element, context) {
 
   context.seen.add(element);
   context.textFingerprints.add(fingerprint);
+  element.dataset.pitCollected = "true";
+  context.collectedElements.push(element);
   element.dataset.pitBlockKind = context.kind;
-  context.blocks.push({ element, id: ensurePitId(element), text, kind: context.kind });
+  context.blocks.push({
+    element,
+    id: ensurePitId(element),
+    text,
+    kind: context.kind,
+    rect: getCachedRect(element, context.measurements),
+    style: getCachedStyle(element, context.measurements)
+  });
   return true;
 }
 
@@ -603,7 +683,7 @@ function prioritizeBlocks(blocks, viewportFirst) {
     .map((entry, index) => ({
       ...entry,
       index,
-      rect: entry.element.getBoundingClientRect()
+      rect: getEntryRect(entry)
     }))
     .sort((a, b) => {
       const aVisible = isInViewport(a.rect);
@@ -642,19 +722,19 @@ function isHardSkipElement(element) {
   return Boolean(tagName && PIT_SKIP_TAGS.has(tagName));
 }
 
-function isVisible(element) {
-  const style = window.getComputedStyle(element);
+function isVisible(element, measurements) {
+  const style = getCachedStyle(element, measurements);
   if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
     return false;
   }
 
-  const rect = element.getBoundingClientRect();
+  const rect = getCachedRect(element, measurements);
   return rect.width > 0 && rect.height > 0;
 }
 
-function isAssistiveOnlyElement(element) {
-  const style = window.getComputedStyle(element);
-  const rect = element.getBoundingClientRect();
+function isAssistiveOnlyElement(element, measurements) {
+  const style = getCachedStyle(element, measurements);
+  const rect = getCachedRect(element, measurements);
   const className = typeof element.className === "string" ? element.className : "";
 
   if (element.getAttribute("aria-hidden") === "true") {
@@ -722,17 +802,17 @@ function hasParagraphLikeChild(element) {
   );
 }
 
-function hasDirectReadableText(element) {
+function hasDirectReadableText(element, measurements) {
   let text = "";
 
   element.childNodes.forEach((child) => {
-    text += extractInlineReadableText(child, element);
+    text += extractInlineReadableText(child, element, measurements);
   });
 
   return normalizeText(text).length >= 4;
 }
 
-function extractInlineReadableText(node, rootElement) {
+function extractInlineReadableText(node, rootElement, measurements) {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.nodeValue || "";
   }
@@ -750,7 +830,7 @@ function extractInlineReadableText(node, rootElement) {
   }
 
   if (node !== rootElement) {
-    const display = window.getComputedStyle(node).display;
+    const display = getCachedStyle(node, measurements).display;
     if (PIT_BLOCK_DISPLAYS.has(display) && !PIT_INLINE_DISPLAYS.has(display)) {
       return "";
     }
@@ -758,21 +838,21 @@ function extractInlineReadableText(node, rootElement) {
 
   let text = "";
   node.childNodes.forEach((child) => {
-    text += extractInlineReadableText(child, rootElement);
+    text += extractInlineReadableText(child, rootElement, measurements);
   });
   return text;
 }
 
-function extractReadableText(element) {
+function extractReadableText(element, measurements) {
   if (element.matches("[data-testid='tweetText']")) {
     return normalizeReadableText(element.innerText || element.textContent || "");
   }
 
-  const text = extractReadableTextFromNode(element, element);
+  const text = extractReadableTextFromNode(element, element, measurements);
   return normalizeReadableText(text);
 }
 
-function extractReadableTextFromNode(node, rootElement) {
+function extractReadableTextFromNode(node, rootElement, measurements) {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.nodeValue || "";
   }
@@ -781,7 +861,7 @@ function extractReadableTextFromNode(node, rootElement) {
     return "";
   }
 
-  if (node !== rootElement && (shouldSkipElement(node) || !isVisible(node) || isAssistiveOnlyElement(node))) {
+  if (node !== rootElement && (shouldSkipElement(node) || !isVisible(node, measurements) || isAssistiveOnlyElement(node, measurements))) {
     return "";
   }
 
@@ -792,9 +872,9 @@ function extractReadableTextFromNode(node, rootElement) {
 
   let text = "";
   node.childNodes.forEach((child) => {
-    text += extractReadableTextFromNode(child, rootElement);
+    text += extractReadableTextFromNode(child, rootElement, measurements);
     if (child.nodeType === Node.ELEMENT_NODE && child instanceof HTMLElement) {
-      const display = window.getComputedStyle(child).display;
+      const display = getCachedStyle(child, measurements).display;
       if (PIT_BLOCK_DISPLAYS.has(display)) {
         text += "\n";
       }
@@ -815,13 +895,8 @@ function hasCollectedAncestor(element, seen) {
   return false;
 }
 
-function hasCollectedDescendant(element, seen) {
-  for (const collected of seen) {
-    if (element !== collected && element.contains(collected)) {
-      return true;
-    }
-  }
-  return false;
+function hasCollectedDescendant(element) {
+  return Boolean(element.querySelector("[data-pit-collected='true']"));
 }
 
 function isLikelyChromeText(element, text) {
@@ -1067,8 +1142,8 @@ function unlockElementHeightSoon(element) {
 
 function estimateTranslationSlotHeight(entry) {
   const sourceElement = entry.element;
-  const style = window.getComputedStyle(sourceElement);
-  const rect = sourceElement.getBoundingClientRect();
+  const style = getEntryStyle(entry);
+  const rect = getEntryRect(entry);
   const lineHeight = readableLineHeight(style);
 
   if (entry.kind === "tweet-segment") {
@@ -1270,26 +1345,17 @@ function startDynamicTranslationObserver(options) {
       return;
     }
 
-    const hasRelevantChange = mutations.some((mutation) => {
-      if (mutation.type === "attributes") {
-        return mutation.target instanceof HTMLElement && !shouldSkipElement(mutation.target);
-      }
-
-      return Array.from(mutation.addedNodes).some((node) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          return normalizeText(node.nodeValue || "").length >= 4;
-        }
-        return node instanceof HTMLElement && !shouldSkipElement(node);
-      });
-    });
-
-    if (!hasRelevantChange) {
+    const roots = collectMutationScanRoots(mutations);
+    if (roots.length === 0) {
       return;
     }
 
+    PIT_STATE.dynamicRoots = mergeScanRoots(PIT_STATE.dynamicRoots.concat(roots));
     window.clearTimeout(PIT_STATE.dynamicTimer);
     PIT_STATE.dynamicTimer = window.setTimeout(() => {
-      translateDiscoveredBlocks(options).catch((error) => {
+      const scanRoots = PIT_STATE.dynamicRoots;
+      PIT_STATE.dynamicRoots = [];
+      translateDiscoveredBlocks(options, scanRoots).catch((error) => {
         setFloatingStatus("Update failed");
       });
     }, 900);
@@ -1307,18 +1373,104 @@ function startDynamicTranslationObserver(options) {
 function stopDynamicTranslationObserver() {
   PIT_STATE.dynamicObserver?.disconnect();
   PIT_STATE.dynamicObserver = null;
+  PIT_STATE.dynamicRoots = [];
   window.clearTimeout(PIT_STATE.dynamicTimer);
   PIT_STATE.dynamicTimer = null;
 }
 
-async function translateDiscoveredBlocks(options) {
+function collectMutationScanRoots(mutations) {
+  const roots = [];
+
+  mutations.forEach((mutation) => {
+    if (mutation.type === "attributes") {
+      if (mutation.target instanceof HTMLElement && !shouldSkipElement(mutation.target)) {
+        roots.push(resolveScanRoot(mutation.target));
+      }
+      return;
+    }
+
+    Array.from(mutation.addedNodes).forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const parent = node.parentElement;
+        if (parent && normalizeText(node.nodeValue || "").length >= 4 && !shouldSkipElement(parent)) {
+          roots.push(resolveScanRoot(parent));
+        }
+        return;
+      }
+
+      if (node instanceof HTMLElement && !shouldSkipElement(node)) {
+        roots.push(resolveScanRoot(node));
+      }
+    });
+  });
+
+  return mergeScanRoots(roots);
+}
+
+function resolveScanRoot(element) {
+  if (!element || element === document.body) {
+    return document.body;
+  }
+
+  return element.closest(
+    [
+      "article",
+      "section",
+      "main",
+      "li",
+      "[role='article']",
+      "[data-testid='cellInnerDiv']",
+      ".markdown-body",
+      ".comment-body",
+      ".commtext",
+      ".titleline"
+    ].join(",")
+  ) || element;
+}
+
+function mergeScanRoots(roots) {
+  const merged = [];
+
+  roots.forEach((root) => {
+    if (!(root instanceof HTMLElement) || !root.isConnected) {
+      return;
+    }
+
+    if (merged.some((existing) => existing === root || existing.contains(root))) {
+      return;
+    }
+
+    for (let index = merged.length - 1; index >= 0; index -= 1) {
+      if (root.contains(merged[index])) {
+        merged.splice(index, 1);
+      }
+    }
+
+    merged.push(root);
+  });
+
+  return merged.slice(0, 24);
+}
+
+async function translateDiscoveredBlocks(options, roots = [document.body]) {
   if (PIT_STATE.running) {
     return;
   }
 
-  const blocks = collectTranslationBlocks(document.body, {
-    minChars: Number(options.minChars || 4),
-    mode: options.mode || "bilingual"
+  const seenElements = new Set();
+  const blocks = [];
+  mergeScanRoots(roots).forEach((root) => {
+    collectTranslationBlocks(root, {
+      minChars: Number(options.minChars || 4),
+      mode: options.mode || "bilingual"
+    }).forEach((entry) => {
+      if (seenElements.has(entry.element)) {
+        return;
+      }
+
+      seenElements.add(entry.element);
+      blocks.push(entry);
+    });
   });
   const orderedBlocks = prioritizeBlocks(blocks, true).slice(0, 40);
   if (orderedBlocks.length === 0) {

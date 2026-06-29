@@ -1,11 +1,14 @@
 const START_COMMAND = [
-  "cd /Users/samsoncj/develop/codex-playground/personal-immersive-translator",
+  "# Run from the personal-immersive-translator repository folder.",
+  "# You can also double-click: Start Translator.command",
   "export TRANSLATOR_BACKEND=codex-app",
   "export CODEX_MODEL=gpt-5.3-codex-spark",
   "npm start"
 ].join("\n");
 
 const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
+const PIT_TOKEN = "pit-local-extension-token-v1";
+const HEALTH_TIMEOUT_MS = 5000;
 const LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["中文", "Chinese (Simplified)"],
   ["简体中文", "Chinese (Simplified)"],
@@ -100,7 +103,11 @@ async function syncFloatingButton() {
 async function checkHealth() {
   const endpoint = normalizeEndpoint(fields.endpoint.value);
   try {
-    const response = await fetch(`${endpoint}/health`);
+    const response = await fetchWithTimeout(`${endpoint}/health`, {
+      headers: {
+        "X-PIT-Token": PIT_TOKEN
+      }
+    }, HEALTH_TIMEOUT_MS);
     const body = await response.json();
     const ready = response.ok && body.ok !== false;
 
@@ -265,6 +272,19 @@ function friendlyError(error) {
 
 function normalizeEndpoint(endpoint) {
   return endpoint.replace(/\/+$/, "");
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function setStatus(text, isError = false) {

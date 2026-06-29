@@ -53,7 +53,7 @@ Start Translator.command
 或者手动运行：
 
 ```bash
-cd /Users/samsoncj/develop/codex-playground/personal-immersive-translator
+cd /Users/samsoncj/develop/personal-immersive-translator
 npm run doctor
 npm run start:codex
 ```

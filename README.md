@@ -54,7 +54,7 @@ Start Translator.command
 Or run manually:
 
 ```bash
-cd /Users/samsoncj/develop/codex-playground/personal-immersive-translator
+cd /Users/samsoncj/develop/personal-immersive-translator
 npm run doctor
 npm run start:codex
 ```
