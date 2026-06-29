@@ -12,16 +12,23 @@ const PIT_STATE = {
   routeUpdatePending: false,
   floating: null,
   floatingStatusTimer: null,
+  selectionTooltip: null,
+  selectionTimer: null,
+  selectionRequestId: 0,
+  selectionTranslationEnabled: true,
   lazyObserver: null,
   lazyQueue: [],
   lazyQueuedIds: new Set(),
   lazyTimer: null,
   translated: false,
   nextBlockId: 1,
+  lastModel: "",
   sessionId: createShortId()
 };
 
 const PIT_DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
+const PIT_DEFAULT_BILINGUAL_STYLE = "dashed";
+const PIT_BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
 const PIT_TARGET_LANGUAGES = [
   "Chinese (Simplified)",
   "Chinese (Traditional)",
@@ -40,6 +47,24 @@ const PIT_TARGET_LANGUAGES = [
   "Thai",
   "Indonesian"
 ];
+const PIT_TARGET_LANGUAGE_LABELS = {
+  "Chinese (Simplified)": "中文 (简体)",
+  "Chinese (Traditional)": "中文 (繁体)",
+  "English": "English",
+  "Japanese": "日本語",
+  "Korean": "한국어",
+  "French": "Français",
+  "German": "Deutsch",
+  "Spanish": "Español",
+  "Portuguese": "Português",
+  "Italian": "Italiano",
+  "Russian": "Русский",
+  "Arabic": "العربية",
+  "Hindi": "हिन्दी",
+  "Vietnamese": "Tiếng Việt",
+  "Thai": "ไทย",
+  "Indonesian": "Indonesia"
+};
 const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["中文", "Chinese (Simplified)"],
   ["简体中文", "Chinese (Simplified)"],
@@ -237,6 +262,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 initFloatingControl();
+initSelectionTranslation();
 
 async function translatePage(options) {
   if (PIT_STATE.running) {
@@ -327,7 +353,9 @@ async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translat
   const mode = options.mode || "bilingual";
   let translated = 0;
 
-  prepareStableTranslationSurfaces(orderedBlocks, mode);
+  const bilingualStyle = normalizeBilingualStyle(options.bilingualStyle);
+
+  prepareStableTranslationSurfaces(orderedBlocks, mode, bilingualStyle);
   await nextAnimationFrame();
 
   try {
@@ -360,7 +388,7 @@ async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translat
         throw new Error(response?.error || "Translation request failed.");
       }
 
-      applyTranslations(batch, response.translations, mode);
+      applyTranslations(batch, response.translations, mode, bilingualStyle);
       translated += batch.length;
     }
   } catch (error) {
@@ -1095,7 +1123,7 @@ function createTextFingerprint(text) {
   return normalizeText(text).toLowerCase().slice(0, 240);
 }
 
-function prepareStableTranslationSurfaces(entries, mode) {
+function prepareStableTranslationSurfaces(entries, mode, bilingualStyle = PIT_DEFAULT_BILINGUAL_STYLE) {
   entries.forEach((entry) => {
     if (!entry.element.parentNode) {
       return;
@@ -1120,6 +1148,7 @@ function prepareStableTranslationSurfaces(entries, mode) {
     slot.className = "pit-translation pit-translation-pending";
     slot.dataset.pitSkip = "true";
     slot.dataset.pitPlacement = translationSlotPlacement(entry);
+    slot.dataset.pitStyle = normalizeBilingualStyle(bilingualStyle);
     renderPendingTranslationSlot(slot);
     applyInheritedTextStyle(entry.element, slot);
     slot.style.minHeight = estimateTranslationSlotHeight(entry);
@@ -1343,8 +1372,9 @@ function readableLineHeight(style) {
   return Number.isFinite(fontSize) ? fontSize * 1.35 : 20;
 }
 
-function applyTranslations(batch, translations, mode) {
+function applyTranslations(batch, translations, mode, bilingualStyle = PIT_DEFAULT_BILINGUAL_STYLE) {
   const translationsById = normalizeTranslationMap(batch, translations);
+  const normalizedStyle = normalizeBilingualStyle(bilingualStyle);
 
   batch.forEach((entry) => {
     const translation = String(translationsById.get(entry.id) || "").trim();
@@ -1370,6 +1400,7 @@ function applyTranslations(batch, translations, mode) {
     translationBlock.className = "pit-translation pit-translation-ready";
     translationBlock.dataset.pitSkip = "true";
     translationBlock.dataset.pitPlacement = translationSlotPlacement(entry);
+    translationBlock.dataset.pitStyle = normalizedStyle;
     translationBlock.textContent = translation;
     translationBlock.removeAttribute("aria-label");
     translationBlock.removeAttribute("role");
@@ -1963,6 +1994,15 @@ function initFloatingControl() {
     if (area === "local" && changes.showFloatingButton) {
       setFloatingVisible(changes.showFloatingButton.newValue !== false);
     }
+    if (area === "local" && changes.bilingualStyle) {
+      applyBilingualStyleToExistingTranslations(changes.bilingualStyle.newValue);
+    }
+    if (area === "local" && changes.translateSelection) {
+      PIT_STATE.selectionTranslationEnabled = changes.translateSelection.newValue !== false;
+      if (!PIT_STATE.selectionTranslationEnabled) {
+        hideSelectionTooltip();
+      }
+    }
   });
 }
 
@@ -1980,6 +2020,279 @@ function setFloatingVisible(visible) {
   mountFloatingControl();
 }
 
+function initSelectionTranslation() {
+  chrome.storage.local.get({ translateSelection: true }, (settings) => {
+    PIT_STATE.selectionTranslationEnabled = settings.translateSelection !== false;
+  });
+
+  document.addEventListener("mouseup", scheduleSelectionTranslation);
+  document.addEventListener("keyup", (event) => {
+    if (["Shift", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      scheduleSelectionTranslation(event);
+    }
+  });
+  document.addEventListener("mousedown", (event) => {
+    if (!event.target.closest?.("#pit-selection-tooltip")) {
+      hideSelectionTooltip();
+    }
+  });
+  window.addEventListener("scroll", hideSelectionTooltip, { passive: true });
+}
+
+function scheduleSelectionTranslation(event) {
+  if (!PIT_STATE.selectionTranslationEnabled || event.target?.closest?.("#pit-floating, #pit-selection-tooltip")) {
+    return;
+  }
+
+  window.clearTimeout(PIT_STATE.selectionTimer);
+  PIT_STATE.selectionTimer = window.setTimeout(() => {
+    translateCurrentSelection().catch(() => {
+      renderSelectionTooltipError("Translation failed");
+    });
+  }, 180);
+}
+
+async function translateCurrentSelection() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    hideSelectionTooltip();
+    return;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (selectionIntersectsSkippedUi(range)) {
+    return;
+  }
+
+  const text = normalizeReadableText(selection.toString());
+  if (text.length < 3 || text.length > 1200 || isMostlyPunctuation(text)) {
+    hideSelectionTooltip();
+    return;
+  }
+
+  const rect = selectionRangeRect(range);
+  if (!rect) {
+    return;
+  }
+
+  const requestId = PIT_STATE.selectionRequestId + 1;
+  PIT_STATE.selectionRequestId = requestId;
+  renderSelectionTooltipPending(rect);
+
+  const settings = await readTranslationSettings();
+  const response = await chrome.runtime.sendMessage({
+    type: "translate-batch",
+    items: [{
+      id: "selection",
+      index: 0,
+      kind: "selection",
+      tag: "selection",
+      path: "selection",
+      text
+    }],
+    targetLanguage: settings.targetLanguage,
+    endpoint: settings.endpoint,
+    sourceUrl: location.href
+  });
+
+  if (PIT_STATE.selectionRequestId !== requestId) {
+    return;
+  }
+
+  if (!response?.ok) {
+    throw new Error(response?.error || "Selection translation failed.");
+  }
+
+  const translations = normalizeTranslationMap([{ id: "selection" }], response.translations);
+  const translation = String(translations.get("selection") || "").trim();
+  if (!translation) {
+    throw new Error("Selection translation returned empty text.");
+  }
+
+  renderSelectionTooltipResult(rect, translation, settings.targetLanguage);
+}
+
+function selectionIntersectsSkippedUi(range) {
+  const node = range.commonAncestorContainer;
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  if (!element?.closest) {
+    return false;
+  }
+
+  if (element.closest("#pit-floating, #pit-selection-tooltip, .pit-translation, input, textarea, select, [contenteditable]")) {
+    return true;
+  }
+
+  return false;
+}
+
+function selectionRangeRect(range) {
+  const rect = range.getBoundingClientRect();
+  if (rect.width > 0 || rect.height > 0) {
+    return rect;
+  }
+
+  return Array.from(range.getClientRects()).find((item) => item.width > 0 || item.height > 0) || null;
+}
+
+function renderSelectionTooltipPending(rect) {
+  const root = ensureSelectionTooltip(rect);
+  root.innerHTML = `
+    <div class="pit-selection-body">
+      <div class="pit-selection-label">Translation</div>
+      <div class="pit-selection-loading">
+        <span class="pit-translation-spinner" aria-hidden="true"></span>
+        <span>Translating selection…</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderSelectionTooltipResult(rect, translation, targetLanguage) {
+  const root = ensureSelectionTooltip(rect);
+  root.innerHTML = `
+    <div class="pit-selection-body">
+      <div class="pit-selection-label">Translation · ${escapeHtml(selectionLanguageLabel(targetLanguage))}</div>
+      <div class="pit-selection-text"></div>
+    </div>
+    <div class="pit-selection-foot">
+      <div class="pit-selection-engine">
+        <span class="pit-selection-engine-dot"></span>
+        <span></span>
+      </div>
+      <div class="pit-selection-icons">
+        <button type="button" class="pit-selection-icon" data-action="copy" title="Copy" aria-label="Copy translation">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="3" y="3" width="12" height="12" rx="2.5" stroke="currentColor" stroke-width="1.8"/>
+            <rect x="9" y="9" width="12" height="12" rx="2.5" fill="var(--pit-tip-surface)" stroke="currentColor" stroke-width="1.8"/>
+          </svg>
+        </button>
+        <button type="button" class="pit-selection-icon" data-action="speak" title="Play" aria-label="Play translation">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M7 5 L19 12 L7 19 Z" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  `;
+  root.querySelector(".pit-selection-text").textContent = translation;
+  root.querySelector(".pit-selection-engine span:last-child").textContent = prettyModelLabel(PIT_STATE.lastModel);
+  root.querySelector("[data-action='copy']").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(translation);
+    flashSelectionIcon(root.querySelector("[data-action='copy']"));
+  });
+  root.querySelector("[data-action='speak']").addEventListener("click", () => {
+    speakSelectionTranslation(translation, targetLanguage);
+    flashSelectionIcon(root.querySelector("[data-action='speak']"));
+  });
+}
+
+function selectionLanguageLabel(targetLanguage) {
+  const normalized = normalizeTargetLanguage(targetLanguage);
+  return PIT_TARGET_LANGUAGE_LABELS?.[normalized] || normalized;
+}
+
+function flashSelectionIcon(button) {
+  if (!button) {
+    return;
+  }
+  button.dataset.flash = "true";
+  window.setTimeout(() => {
+    if (button.isConnected) {
+      button.dataset.flash = "false";
+    }
+  }, 900);
+}
+
+function renderSelectionTooltipError(message) {
+  const root = PIT_STATE.selectionTooltip;
+  if (!root) {
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="pit-selection-body">
+      <div class="pit-selection-label">Translation</div>
+      <div class="pit-selection-error">${escapeHtml(message)}</div>
+    </div>
+  `;
+}
+
+function ensureSelectionTooltip(rect) {
+  let root = PIT_STATE.selectionTooltip || document.getElementById("pit-selection-tooltip");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "pit-selection-tooltip";
+    root.dataset.pitSkip = "true";
+    document.documentElement.appendChild(root);
+    PIT_STATE.selectionTooltip = root;
+  }
+
+  positionSelectionTooltip(root, rect);
+  return root;
+}
+
+function positionSelectionTooltip(root, rect) {
+  const width = 330;
+  const left = clamp(rect.left, 12, window.innerWidth - width - 12);
+  const belowTop = rect.bottom + 12;
+  const aboveTop = rect.top - 178;
+  const flip = belowTop + 168 > window.innerHeight && aboveTop > 12;
+  const top = flip ? aboveTop : belowTop;
+  root.dataset.placement = flip ? "above" : "below";
+  root.style.setProperty("--pit-tip-arrow", `${clamp(rect.left + rect.width / 2 - left, 18, width - 18)}px`);
+  root.style.left = `${left}px`;
+  root.style.top = `${clamp(top, 12, window.innerHeight - 180)}px`;
+}
+
+function speakSelectionTranslation(text, targetLanguage) {
+  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = speechLanguageForTarget(targetLanguage);
+  window.speechSynthesis.speak(utterance);
+}
+
+function speechLanguageForTarget(targetLanguage) {
+  const normalized = String(targetLanguage || "").toLowerCase();
+  if (normalized.includes("chinese")) {
+    return normalized.includes("traditional") ? "zh-TW" : "zh-CN";
+  }
+  if (normalized.includes("japanese")) {
+    return "ja-JP";
+  }
+  if (normalized.includes("korean")) {
+    return "ko-KR";
+  }
+  if (normalized.includes("french")) {
+    return "fr-FR";
+  }
+  if (normalized.includes("german")) {
+    return "de-DE";
+  }
+  if (normalized.includes("spanish")) {
+    return "es-ES";
+  }
+  return "";
+}
+
+function hideSelectionTooltip() {
+  PIT_STATE.selectionRequestId += 1;
+  PIT_STATE.selectionTooltip?.remove();
+  PIT_STATE.selectionTooltip = null;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function mountFloatingControl() {
   const root = document.createElement("div");
   root.id = "pit-floating";
@@ -1988,52 +2301,84 @@ function mountFloatingControl() {
   root.dataset.mode = PIT_STATE.translated ? "translated" : "idle";
   root.innerHTML = `
     <button class="pit-fab" type="button" title="Left click: translate/original. Right click: menu">
-      <span class="pit-fab-label">${PIT_STATE.translated ? "O" : "T"}</span>
+      <svg class="pit-fab-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 4 L20 19 L4 19 Z" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" fill="rgba(255,255,255,0.25)"/>
+      </svg>
       <span class="pit-fab-dot"></span>
     </button>
     <div class="pit-floating-menu" role="menu">
       <div class="pit-floating-head">
-        <div>
-          <div class="pit-floating-title">Spark Translate</div>
-          <div class="pit-floating-subtitle">Local Codex bridge</div>
+        <div class="pit-floating-brand">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 4 L20 19 L4 19 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" fill="rgba(42,111,219,0.12)"/>
+          </svg>
+          <span class="pit-floating-title">Prism</span>
         </div>
-        <span class="pit-floating-badge">Ready</span>
+        <span class="pit-floating-badge" data-role="badge" data-ok="true">ON</span>
       </div>
-      <button class="pit-floating-primary" type="button" data-action="toggle">Translate Page</button>
-      <div class="pit-floating-server">
-        <div>
-          <span>Server</span>
-          <strong data-role="serverState">Checking...</strong>
-        </div>
-        <em data-role="latency">--</em>
-      </div>
-      <div class="pit-floating-actions">
-        <button type="button" data-action="clear">Clear</button>
-        <button type="button" data-action="hide">Hide</button>
+      <div class="pit-floating-row" data-action="toggle" role="button" tabindex="0">
+        <span>Translate page</span>
+        <span class="pit-toggle" aria-hidden="true"></span>
       </div>
       <label class="pit-floating-field">
         <span>Target</span>
         <select data-setting="targetLanguage">
           ${renderTargetLanguageOptions()}
-          <option value="__custom__">Custom...</option>
+          <option value="__custom__">Custom…</option>
         </select>
         <input data-setting="customTargetLanguage" placeholder="e.g. Dutch, Brazilian Portuguese" hidden>
       </label>
       <label class="pit-floating-field">
-        <span>Mode</span>
+        <span>Display</span>
         <select data-setting="mode">
           <option value="bilingual">Bilingual</option>
           <option value="replace">Replace original</option>
         </select>
       </label>
-      <label class="pit-floating-check">
-        <input data-setting="clearPrevious" type="checkbox">
-        <span>Clear before translating</span>
-      </label>
-      <label class="pit-floating-check">
-        <input data-setting="viewportFirst" type="checkbox">
-        <span>Translate visible text first</span>
-      </label>
+      <button class="pit-floating-settings" type="button" data-action="opensettings" aria-expanded="false">
+        <span>Open settings</span>
+        <span class="pit-caret" aria-hidden="true"></span>
+      </button>
+      <div class="pit-floating-advanced">
+        <label class="pit-floating-field">
+          <span>Bilingual style</span>
+          <select data-setting="bilingualStyle">
+            <option value="dashed">Dashed underline</option>
+            <option value="dotted">Dotted underline</option>
+            <option value="wavy">Wavy underline</option>
+            <option value="highlight">Highlight</option>
+            <option value="soft-box">Soft box</option>
+            <option value="blur">Blur</option>
+          </select>
+        </label>
+        <label class="pit-floating-check">
+          <span>Translate on selection</span>
+          <input data-setting="translateSelection" type="checkbox">
+        </label>
+        <label class="pit-floating-check">
+          <span>Auto-translate this site</span>
+          <input data-setting="autoTranslateSite" type="checkbox">
+        </label>
+        <label class="pit-floating-check">
+          <span>Clear before translating</span>
+          <input data-setting="clearPrevious" type="checkbox">
+        </label>
+        <label class="pit-floating-check">
+          <span>Translate visible text first</span>
+          <input data-setting="viewportFirst" type="checkbox">
+        </label>
+        <div class="pit-floating-server">
+          <div>
+            <span class="pit-floating-server-dot"></span>
+            <strong data-role="serverState">Checking…</strong>
+          </div>
+          <em data-role="latency">--</em>
+        </div>
+        <div class="pit-floating-actions">
+          <button type="button" data-action="clear">Clear page</button>
+          <button type="button" data-action="hide">Hide button</button>
+        </div>
+      </div>
       <div class="pit-floating-status">Ready</div>
     </div>
   `;
@@ -2123,18 +2468,26 @@ function wireFloatingControl(root) {
 
   const menu = root.querySelector(".pit-floating-menu");
   menu.addEventListener("click", async (event) => {
-    const button = event.target.closest("button[data-action]");
-    if (!button) {
+    const actionEl = event.target.closest("[data-action]");
+    if (!actionEl || !menu.contains(actionEl)) {
       return;
     }
 
-    const action = button.dataset.action;
-    root.dataset.expanded = "false";
+    const action = actionEl.dataset.action;
+    if (action === "opensettings") {
+      const open = root.dataset.settings !== "true";
+      root.dataset.settings = open ? "true" : "false";
+      actionEl.setAttribute("aria-expanded", String(open));
+      return;
+    }
+
     if (action === "toggle") {
       await toggleTranslationFromFloating();
     } else if (action === "clear") {
+      root.dataset.expanded = "false";
       clearTranslations();
     } else if (action === "hide") {
+      root.dataset.expanded = "false";
       await chrome.storage.local.set({ showFloatingButton: false });
       setFloatingVisible(false);
     }
@@ -2162,7 +2515,7 @@ function wireFloatingControl(root) {
 }
 
 function renderTargetLanguageOptions() {
-  return PIT_TARGET_LANGUAGES.map((language) => `<option value="${language}">${language}</option>`).join("");
+  return PIT_TARGET_LANGUAGES.map((language) => `<option value="${language}">${PIT_TARGET_LANGUAGE_LABELS[language] || language}</option>`).join("");
 }
 
 async function hydrateFloatingSettings(root) {
@@ -2170,9 +2523,13 @@ async function hydrateFloatingSettings(root) {
   const targetSelect = root.querySelector("[data-setting='targetLanguage']");
   const customTarget = root.querySelector("[data-setting='customTargetLanguage']");
   const mode = root.querySelector("[data-setting='mode']");
+  const bilingualStyle = root.querySelector("[data-setting='bilingualStyle']");
   const clearPrevious = root.querySelector("[data-setting='clearPrevious']");
   const viewportFirst = root.querySelector("[data-setting='viewportFirst']");
+  const translateSelection = root.querySelector("[data-setting='translateSelection']");
+  const autoTranslateSite = root.querySelector("[data-setting='autoTranslateSite']");
   const targetLanguage = normalizeTargetLanguage(settings.targetLanguage);
+  const host = currentAutoTranslateHost();
 
   if (PIT_TARGET_LANGUAGES.includes(targetLanguage)) {
     targetSelect.value = targetLanguage;
@@ -2183,8 +2540,12 @@ async function hydrateFloatingSettings(root) {
   }
 
   mode.value = settings.mode;
+  bilingualStyle.value = normalizeBilingualStyle(settings.bilingualStyle);
   clearPrevious.checked = settings.clearPrevious !== false;
   viewportFirst.checked = settings.viewportFirst !== false;
+  translateSelection.checked = settings.translateSelection !== false;
+  autoTranslateSite.checked = Boolean(host && settings.autoTranslateSites?.[host]);
+  autoTranslateSite.disabled = !host;
   updateFloatingCustomLanguage(root);
   updateFloatingState();
   checkFloatingHealth(root, settings.endpoint);
@@ -2192,12 +2553,25 @@ async function hydrateFloatingSettings(root) {
 
 async function saveFloatingSettings(root) {
   const current = await readTranslationSettings();
+  const host = currentAutoTranslateHost();
+  const autoTranslateSites = { ...(current.autoTranslateSites || {}) };
+  if (host) {
+    if (root.querySelector("[data-setting='autoTranslateSite']").checked) {
+      autoTranslateSites[host] = true;
+    } else {
+      delete autoTranslateSites[host];
+    }
+  }
+
   await chrome.storage.local.set({
     ...current,
     targetLanguage: readFloatingTargetLanguage(root),
     mode: root.querySelector("[data-setting='mode']").value,
+    bilingualStyle: normalizeBilingualStyle(root.querySelector("[data-setting='bilingualStyle']").value),
     clearPrevious: root.querySelector("[data-setting='clearPrevious']").checked,
-    viewportFirst: root.querySelector("[data-setting='viewportFirst']").checked
+    viewportFirst: root.querySelector("[data-setting='viewportFirst']").checked,
+    translateSelection: root.querySelector("[data-setting='translateSelection']").checked,
+    autoTranslateSites
   });
   setFloatingStatus("Saved");
 }
@@ -2216,6 +2590,30 @@ function normalizeTargetLanguage(value) {
     return PIT_DEFAULT_TARGET_LANGUAGE;
   }
   return PIT_LEGACY_TARGET_LANGUAGE_ALIASES.get(language) || language;
+}
+
+function normalizeBilingualStyle(value) {
+  return PIT_BILINGUAL_STYLES.has(value) ? value : PIT_DEFAULT_BILINGUAL_STYLE;
+}
+
+function prettyModelLabel(model) {
+  const raw = String(model || "").trim();
+  if (!raw) {
+    return "Codex Spark 5.3";
+  }
+  const spark = raw.match(/(\d+(?:\.\d+)?)[-_ ]?codex[-_ ]?spark|codex[-_ ]?spark[-_ ]?(\d+(?:\.\d+)?)/i);
+  if (spark) {
+    const version = spark[1] || spark[2];
+    return version ? `Codex Spark ${version}` : "Codex Spark";
+  }
+  return raw;
+}
+
+function applyBilingualStyleToExistingTranslations(value) {
+  const bilingualStyle = normalizeBilingualStyle(value);
+  document.querySelectorAll(".pit-translation").forEach((node) => {
+    node.dataset.pitStyle = bilingualStyle;
+  });
 }
 
 function updateFloatingCustomLanguage(root) {
@@ -2239,16 +2637,18 @@ async function checkFloatingHealth(root, endpoint) {
     }
 
     const body = response.health || {};
-    const backend = body.backend || "proxy";
-    const model = body.model || "model";
-    serverState.textContent = body.warm === false ? `${backend} warming` : `${backend} / ${model}`;
+    if (body.model) {
+      PIT_STATE.lastModel = body.model;
+    }
+    const model = prettyModelLabel(body.model);
+    serverState.textContent = body.warm === false ? `${model} warming` : model;
     latency.textContent = body.lastLatencyMs ? `${body.lastLatencyMs}ms` : body.warm === false ? "warming" : "--";
-    badge.textContent = PIT_STATE.running ? "Busy" : "Ready";
+    badge.textContent = PIT_STATE.running ? "BUSY" : "ON";
     badge.dataset.ok = "true";
   } catch {
     serverState.textContent = "Not running";
     latency.textContent = "--";
-    badge.textContent = "Offline";
+    badge.textContent = "OFF";
     badge.dataset.ok = "false";
   }
 }
@@ -2292,14 +2692,24 @@ function readTranslationSettings() {
     targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
     endpoint: "http://127.0.0.1:8787",
     mode: "bilingual",
+    bilingualStyle: PIT_DEFAULT_BILINGUAL_STYLE,
     clearPrevious: true,
-    viewportFirst: true
+    viewportFirst: true,
+    translateSelection: true,
+    autoTranslateSites: {}
   }).then((settings) => ({
     ...settings,
     targetLanguage: normalizeTargetLanguage(settings.targetLanguage),
     batchSize: 24,
     minChars: 4
   }));
+}
+
+function currentAutoTranslateHost() {
+  if (!["http:", "https:"].includes(location.protocol)) {
+    return "";
+  }
+  return location.hostname.toLowerCase();
 }
 
 function hasPageTranslations() {
@@ -2313,18 +2723,10 @@ function updateFloatingState(forceMode) {
   }
 
   const mode = forceMode || (hasPageTranslations() || PIT_STATE.translated ? "translated" : "idle");
-  const label = root.querySelector(".pit-fab-label");
-  const action = root.querySelector("[data-action='toggle']");
   const badge = root.querySelector(".pit-floating-badge");
   root.dataset.mode = mode;
-  if (label) {
-    label.textContent = mode === "running" ? "..." : mode === "translated" ? "O" : "T";
-  }
-  if (action) {
-    action.textContent = mode === "translated" ? "Show Original" : "Translate Page";
-  }
   if (badge && (mode === "running" || badge.dataset.ok !== "false")) {
-    badge.textContent = mode === "running" ? "Busy" : "Ready";
+    badge.textContent = mode === "running" ? "BUSY" : "ON";
   }
 }
 
@@ -2399,6 +2801,8 @@ function injectStyles() {
   style.dataset.pitSkip = "true";
   style.textContent = `
     .pit-translation {
+      --pit-tr-accent: rgba(42, 111, 219, 0.5);
+      --pit-tr-soft-box: rgba(246, 247, 249, 0.92);
       display: block;
       width: auto;
       max-width: 100%;
@@ -2429,10 +2833,72 @@ function injectStyles() {
 
     .pit-translation-ready {
       opacity: 0.68;
+    }
+
+    .pit-translation-ready[data-pit-style="dashed"],
+    .pit-translation-ready:not([data-pit-style]) {
       text-decoration-line: underline;
       text-decoration-style: dashed;
+      text-decoration-color: var(--pit-tr-accent);
       text-decoration-thickness: 1px;
       text-underline-offset: 0.18em;
+    }
+
+    .pit-translation-ready[data-pit-style="dotted"] {
+      text-decoration-line: underline;
+      text-decoration-style: dotted;
+      text-decoration-color: var(--pit-tr-accent);
+      text-decoration-thickness: 1.5px;
+      text-underline-offset: 0.18em;
+    }
+
+    .pit-translation-ready[data-pit-style="wavy"] {
+      text-decoration-line: underline;
+      text-decoration-style: wavy;
+      text-decoration-color: var(--pit-tr-accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.18em;
+    }
+
+    .pit-translation-ready[data-pit-style="highlight"] {
+      width: fit-content;
+      padding: 0.04em 0.28em;
+      border-radius: 4px;
+      background: rgba(42, 111, 219, 0.14);
+      text-decoration: none;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    .pit-translation-ready[data-pit-style="soft-box"] {
+      width: fit-content;
+      padding: 0.32em 0.62em;
+      border: 1px solid rgba(42, 111, 219, 0.20);
+      border-radius: 7px;
+      background: var(--pit-tr-soft-box);
+      text-decoration: none;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .pit-translation {
+        --pit-tr-accent: rgba(91, 146, 255, 0.55);
+        --pit-tr-soft-box: rgba(30, 33, 39, 0.92);
+      }
+    }
+
+    .pit-translation-ready[data-pit-style="blur"] {
+      filter: blur(3.5px);
+      text-decoration: none;
+    }
+
+    @media (hover: hover) {
+      .pit-translation-ready[data-pit-style="blur"] {
+        pointer-events: auto;
+      }
+
+      .pit-translation-ready[data-pit-style="blur"]:hover {
+        filter: none;
+      }
     }
 
     .pit-translation-ready[data-pit-placement="inside"]::before,
@@ -2507,50 +2973,241 @@ function injectStyles() {
       margin-bottom: 0.45em;
     }
 
+    #pit-selection-tooltip {
+      --pit-tip-surface: #ffffff;
+      --pit-tip-border: #e8e9ed;
+      --pit-tip-foot: #fbfbfc;
+      --pit-tip-foot-line: #f1f2f4;
+      --pit-tip-label: #9aa0aa;
+      --pit-tip-text: #2c2f36;
+      --pit-tip-muted: #6e7178;
+      --pit-tip-icon: #8a8f98;
+      --pit-tip-dot: #1f8a5b;
+      --pit-tip-shadow: 0 10px 34px rgba(16, 18, 23, 0.16);
+      position: fixed;
+      z-index: 2147483647;
+      width: 330px;
+      max-width: calc(100vw - 24px);
+      border: 1px solid var(--pit-tip-border);
+      border-radius: 12px;
+      background: var(--pit-tip-surface);
+      box-shadow: var(--pit-tip-shadow);
+      color: var(--pit-tip-text);
+      font: 13px/1.45 "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+      letter-spacing: 0;
+      pointer-events: auto;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      #pit-selection-tooltip {
+        --pit-tip-surface: #1b1e23;
+        --pit-tip-border: #2a2e35;
+        --pit-tip-foot: #16181c;
+        --pit-tip-foot-line: #20242a;
+        --pit-tip-label: #7b818b;
+        --pit-tip-text: #e7e9ed;
+        --pit-tip-muted: #9aa0aa;
+        --pit-tip-icon: #7b818b;
+        --pit-tip-dot: #2fbe7a;
+        --pit-tip-shadow: 0 12px 38px rgba(0, 0, 0, 0.5);
+      }
+    }
+
+    #pit-selection-tooltip .pit-selection-body {
+      padding: 13px 15px 14px;
+    }
+
+    #pit-selection-tooltip .pit-selection-label {
+      margin-bottom: 8px;
+      color: var(--pit-tip-label);
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    #pit-selection-tooltip .pit-selection-text {
+      color: var(--pit-tip-text);
+      font-family: "Noto Sans SC", sans-serif;
+      font-size: 15.5px;
+      line-height: 1.6;
+      white-space: pre-line;
+    }
+
+    #pit-selection-tooltip .pit-selection-loading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--pit-tip-muted);
+      font-size: 13px;
+    }
+
+    #pit-selection-tooltip .pit-selection-error {
+      color: #d0524a;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    #pit-selection-tooltip .pit-selection-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 15px;
+      border-top: 1px solid var(--pit-tip-foot-line);
+      border-radius: 0 0 12px 12px;
+      background: var(--pit-tip-foot);
+    }
+
+    #pit-selection-tooltip .pit-selection-engine {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      color: var(--pit-tip-muted);
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 10.5px;
+    }
+
+    #pit-selection-tooltip .pit-selection-engine-dot {
+      flex: 0 0 auto;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--pit-tip-dot);
+    }
+
+    #pit-selection-tooltip .pit-selection-icons {
+      display: flex;
+      gap: 4px;
+    }
+
+    #pit-selection-tooltip .pit-selection-icon {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--pit-tip-icon);
+      cursor: pointer;
+    }
+
+    #pit-selection-tooltip .pit-selection-icon:hover {
+      background: var(--pit-tip-foot-line);
+      color: var(--pit-tip-text);
+    }
+
+    #pit-selection-tooltip .pit-selection-icon[data-flash="true"] {
+      color: var(--pit-tip-dot);
+    }
+
+    #pit-selection-tooltip::before,
+    #pit-selection-tooltip::after {
+      content: "";
+      position: absolute;
+      left: var(--pit-tip-arrow, 44px);
+      width: 0;
+      height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+    }
+
+    #pit-selection-tooltip[data-placement="below"]::before {
+      top: -8px;
+      border-bottom: 8px solid var(--pit-tip-border);
+    }
+
+    #pit-selection-tooltip[data-placement="below"]::after {
+      top: -7px;
+      border-bottom: 8px solid var(--pit-tip-surface);
+    }
+
+    #pit-selection-tooltip[data-placement="above"]::before {
+      bottom: -8px;
+      border-top: 8px solid var(--pit-tip-border);
+    }
+
+    #pit-selection-tooltip[data-placement="above"]::after {
+      bottom: -7px;
+      border-top: 8px solid var(--pit-tip-foot);
+    }
+
     #pit-floating {
+      --pit-fl-surface: #ffffff;
+      --pit-fl-border: #e8e9ed;
+      --pit-fl-line: #f1f2f4;
+      --pit-fl-text: #15171c;
+      --pit-fl-muted: #6e7178;
+      --pit-fl-faint: #9aa0aa;
+      --pit-fl-chip: #f6f7f9;
+      --pit-fl-chip-line: #e8e9ed;
+      --pit-fl-track: #dadde3;
+      --pit-fl-shadow: 0 10px 34px rgba(16, 18, 23, 0.16);
+      --pit-fl-fab: #2a6fdb;
+      --pit-fl-fab-shadow: 0 8px 24px rgba(42, 111, 219, 0.4);
+      --pit-fl-on: #1f8a5b;
       position: fixed;
       top: 55vh;
       right: 16px;
       z-index: 2147483646;
-      color-scheme: light;
-      font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 13px/1.35 "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
       user-select: none;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      #pit-floating {
+        --pit-fl-surface: #1b1e23;
+        --pit-fl-border: #2a2e35;
+        --pit-fl-line: #20242a;
+        --pit-fl-text: #f3f4f6;
+        --pit-fl-muted: #9aa0aa;
+        --pit-fl-faint: #7b818b;
+        --pit-fl-chip: #1e2127;
+        --pit-fl-chip-line: #2a2e35;
+        --pit-fl-track: #34393f;
+        --pit-fl-shadow: 0 12px 38px rgba(0, 0, 0, 0.5);
+        --pit-fl-fab: #5b92ff;
+        --pit-fl-fab-shadow: 0 8px 24px rgba(91, 146, 255, 0.45);
+        --pit-fl-on: #2fbe7a;
+      }
     }
 
     #pit-floating .pit-fab {
       position: relative;
       display: grid;
       place-items: center;
-      width: 48px;
-      height: 48px;
-      border: 1px solid rgba(15, 23, 42, 0.12);
+      width: 52px;
+      height: 52px;
+      padding: 0;
+      border: 0;
       border-radius: 999px;
-      background: #101828;
-      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+      background: var(--pit-fl-fab);
+      box-shadow: var(--pit-fl-fab-shadow);
       color: #ffffff;
       cursor: grab;
-      font: 700 18px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-      letter-spacing: 0;
     }
 
-    #pit-floating[data-mode="translated"] .pit-fab {
-      background: #0f766e;
+    #pit-floating[data-dragging="true"] .pit-fab {
+      cursor: grabbing;
     }
 
     #pit-floating[data-mode="running"] .pit-fab {
-      background: #344054;
       cursor: wait;
     }
 
     #pit-floating .pit-fab-dot {
       position: absolute;
-      right: 5px;
-      bottom: 5px;
-      width: 9px;
-      height: 9px;
+      right: 6px;
+      bottom: 6px;
+      width: 11px;
+      height: 11px;
       border: 2px solid #ffffff;
       border-radius: 999px;
-      background: #98a2b3;
+      background: #b6bac1;
     }
 
     #pit-floating[data-mode="translated"] .pit-fab-dot {
@@ -2561,80 +3218,255 @@ function injectStyles() {
       background: #fdb022;
     }
 
-    #pit-floating[data-dragging="true"] .pit-fab {
-      cursor: grabbing;
-    }
-
     #pit-floating .pit-floating-menu {
       position: absolute;
       top: 0;
       display: none;
-      width: 272px;
-      padding: 10px;
-      border: 1px solid rgba(15, 23, 42, 0.14);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.98);
-      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.22);
-      color: #101828;
+      width: 252px;
+      border: 1px solid var(--pit-fl-border);
+      border-radius: 13px;
+      background: var(--pit-fl-surface);
+      box-shadow: var(--pit-fl-shadow);
+      color: var(--pit-fl-text);
+      overflow: hidden;
     }
 
     #pit-floating[data-expanded="true"] .pit-floating-menu {
-      display: grid;
-      gap: 6px;
+      display: block;
     }
 
     #pit-floating[data-side="right"] .pit-floating-menu {
-      right: 56px;
+      right: 62px;
     }
 
     #pit-floating[data-side="left"] .pit-floating-menu {
-      left: 56px;
+      left: 62px;
     }
 
     #pit-floating .pit-floating-head {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
       gap: 10px;
-      padding: 2px 2px 4px;
+      padding: 12px 14px 10px;
+      border-bottom: 1px solid var(--pit-fl-line);
+    }
+
+    #pit-floating .pit-floating-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--pit-fl-fab);
     }
 
     #pit-floating .pit-floating-title {
-      color: #475467;
-      font-size: 12px;
-      font-weight: 650;
-    }
-
-    #pit-floating .pit-floating-subtitle {
-      margin-top: 1px;
-      color: #667085;
-      font-size: 11px;
-      font-weight: 500;
+      color: var(--pit-fl-text);
+      font-size: 13px;
+      font-weight: 600;
     }
 
     #pit-floating .pit-floating-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
       flex: 0 0 auto;
-      min-width: 48px;
-      padding: 2px 7px;
-      border: 1px solid #b7dfc8;
-      border-radius: 999px;
-      background: #eefaf2;
-      color: #0f7a3f;
-      font-size: 11px;
-      font-weight: 650;
-      text-align: center;
+      color: var(--pit-fl-on);
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
     }
 
-    #pit-floating[data-mode="running"] .pit-floating-badge {
-      border-color: #fedf89;
-      background: #fffaeb;
-      color: #b54708;
+    #pit-floating .pit-floating-badge::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
     }
 
     #pit-floating .pit-floating-badge[data-ok="false"] {
-      border-color: #f1b8b8;
-      background: #fff1f1;
-      color: #b42318;
+      color: var(--pit-fl-faint);
+    }
+
+    #pit-floating[data-mode="running"] .pit-floating-badge {
+      color: #b54708;
+    }
+
+    #pit-floating .pit-floating-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--pit-fl-line);
+      color: var(--pit-fl-text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    #pit-floating .pit-toggle {
+      position: relative;
+      flex: 0 0 auto;
+      width: 32px;
+      height: 19px;
+      border-radius: 999px;
+      background: var(--pit-fl-track);
+    }
+
+    #pit-floating .pit-toggle::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      transition: left 120ms ease;
+    }
+
+    #pit-floating[data-mode="translated"] .pit-toggle {
+      background: var(--pit-fl-fab);
+    }
+
+    #pit-floating[data-mode="translated"] .pit-toggle::after {
+      left: 15px;
+    }
+
+    #pit-floating[data-mode="running"] .pit-toggle {
+      background: #fdb022;
+    }
+
+    #pit-floating .pit-floating-field {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--pit-fl-line);
+      color: var(--pit-fl-text);
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    #pit-floating .pit-floating-field select,
+    #pit-floating .pit-floating-field input {
+      flex: 0 0 auto;
+      width: 110px;
+      min-height: 28px;
+      border: 1px solid var(--pit-fl-chip-line);
+      border-radius: 8px;
+      background: var(--pit-fl-chip);
+      color: var(--pit-fl-text);
+      font: 12px/1.2 inherit;
+      letter-spacing: 0;
+      padding: 4px 8px;
+    }
+
+    #pit-floating .pit-floating-field input[hidden] {
+      display: none;
+    }
+
+    #pit-floating .pit-floating-settings {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 12px 14px;
+      border: 0;
+      border-bottom: 1px solid var(--pit-fl-line);
+      background: transparent;
+      color: var(--pit-fl-text);
+      font: 500 13px/1.2 inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    #pit-floating .pit-floating-settings:hover {
+      background: var(--pit-fl-chip);
+    }
+
+    #pit-floating .pit-caret {
+      flex: 0 0 auto;
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--pit-fl-faint);
+      transition: transform 120ms ease;
+    }
+
+    #pit-floating[data-settings="true"] .pit-floating-settings .pit-caret {
+      transform: rotate(180deg);
+    }
+
+    #pit-floating .pit-floating-advanced {
+      display: none;
+    }
+
+    #pit-floating[data-settings="true"] .pit-floating-advanced {
+      display: block;
+    }
+
+    #pit-floating .pit-floating-check {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--pit-fl-line);
+      color: var(--pit-fl-text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    #pit-floating .pit-floating-check input {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      flex: 0 0 auto;
+      width: 32px;
+      height: 19px;
+      margin: 0;
+      border: 0;
+      border-radius: 999px;
+      background: var(--pit-fl-track);
+      cursor: pointer;
+    }
+
+    #pit-floating .pit-floating-check input::before {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+      transition: left 120ms ease;
+    }
+
+    #pit-floating .pit-floating-check input:checked {
+      background: var(--pit-fl-fab);
+    }
+
+    #pit-floating .pit-floating-check input:checked::before {
+      left: 15px;
+    }
+
+    #pit-floating .pit-floating-check input:disabled {
+      cursor: not-allowed;
+    }
+
+    #pit-floating .pit-floating-check:has(input:disabled) {
+      opacity: 0.55;
+      cursor: not-allowed;
     }
 
     #pit-floating .pit-floating-server {
@@ -2642,121 +3474,70 @@ function injectStyles() {
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      padding: 8px 9px;
-      border: 1px solid #dde3ea;
-      border-radius: 8px;
-      background: #ffffff;
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--pit-fl-line);
     }
 
-    #pit-floating .pit-floating-server span {
-      display: block;
-      color: #687280;
-      font-size: 11px;
-      font-weight: 600;
+    #pit-floating .pit-floating-server > div {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    #pit-floating .pit-floating-server-dot {
+      flex: 0 0 auto;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--pit-fl-on);
     }
 
     #pit-floating .pit-floating-server strong {
-      display: block;
-      margin-top: 1px;
-      max-width: 180px;
+      max-width: 130px;
       overflow: hidden;
-      color: #101828;
-      font-size: 12px;
-      font-weight: 700;
+      color: var(--pit-fl-muted);
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 11px;
+      font-weight: 500;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
     #pit-floating .pit-floating-server em {
       flex: 0 0 auto;
-      color: #667085;
+      color: var(--pit-fl-faint);
+      font-family: "Geist Mono", ui-monospace, monospace;
       font-size: 11px;
       font-style: normal;
-      font-weight: 500;
     }
 
     #pit-floating .pit-floating-actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 6px;
-    }
-
-    #pit-floating .pit-floating-menu button {
-      min-height: 32px;
-      width: 100%;
-      border: 1px solid #d0d5dd;
-      border-radius: 6px;
-      background: #ffffff;
-      color: #101828;
-      cursor: pointer;
-      font: 650 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      text-align: center;
-      padding: 0 10px;
-    }
-
-    #pit-floating .pit-floating-menu .pit-floating-primary {
-      min-height: 36px;
-      border-color: #101828;
-      background: #101828;
-      color: #ffffff;
-      font-weight: 700;
-    }
-
-    #pit-floating .pit-floating-menu button:hover {
-      background: #e4e7ec;
-    }
-
-    #pit-floating .pit-floating-menu .pit-floating-primary:hover {
-      background: #1d2939;
-    }
-
-    #pit-floating .pit-floating-field {
-      display: grid;
-      gap: 5px;
-      color: #384250;
-      font-size: 12px;
-      font-weight: 650;
-    }
-
-    #pit-floating .pit-floating-field select,
-    #pit-floating .pit-floating-field input {
-      width: 100%;
-      min-height: 32px;
-      border: 1px solid #cbd3dd;
-      border-radius: 6px;
-      background: #ffffff;
-      color: #101828;
-      font: 13px/1.25 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      letter-spacing: 0;
-      padding: 6px 8px;
-    }
-
-    #pit-floating .pit-floating-field input[hidden] {
-      display: none;
-    }
-
-    #pit-floating .pit-floating-check {
-      display: flex;
-      align-items: center;
       gap: 8px;
-      min-height: 24px;
-      color: #384250;
-      font-size: 12px;
-      font-weight: 500;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--pit-fl-line);
     }
 
-    #pit-floating .pit-floating-check input {
-      flex: 0 0 auto;
-      width: 14px;
-      height: 14px;
-      margin: 0;
+    #pit-floating .pit-floating-actions button {
+      min-height: 32px;
+      border: 1px solid var(--pit-fl-chip-line);
+      border-radius: 8px;
+      background: var(--pit-fl-surface);
+      color: var(--pit-fl-text);
+      cursor: pointer;
+      font: 600 12px/1.2 inherit;
+    }
+
+    #pit-floating .pit-floating-actions button:hover {
+      background: var(--pit-fl-chip);
     }
 
     #pit-floating .pit-floating-status {
-      min-height: 18px;
-      padding: 3px 2px 1px;
-      color: #667085;
-      font-size: 12px;
+      padding: 9px 14px;
+      color: var(--pit-fl-muted);
+      font-size: 11.5px;
     }
 
   `;

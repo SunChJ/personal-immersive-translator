@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Rebranded the extension to "Prism — Immersive Translator" with the triangle prism mark across the popup, floating control, and selection tooltip.
+- Added full automatic dark mode (prefers-color-scheme) for every surface, matching the Prism reference design.
+- Rebuilt the popup to the Prism reference layout: translate card with detected-language subtitle, target/display/style rows, a collapsible bilingual style picker, a Codex Spark connection footer, and a kebab overflow menu for server endpoint and advanced options.
+- Redesigned the floating control as a compact Prism menu (Translate page toggle, Target, Display, and an Open settings section) with an icon-based selection tooltip showing the engine and copy/play actions.
+- Added per-site auto-translate settings in the popup and floating control, with background page-load translation for enabled sites.
+- Added bilingual style settings for dashed, dotted, wavy, highlight, soft-box, and blur translation rendering.
+- Added optional selection translation with an in-page result card, copy action, and browser speech playback.
+
 ## 0.2.7 - 2026-06-29
 
 - Prevented replace-mode auto-updates from retriggering themselves after applying translated text.
