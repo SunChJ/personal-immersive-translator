@@ -3,72 +3,151 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Spark Translate</title>
+    <title>Prism — Immersive Translator</title>
     <link rel="stylesheet" href="popup.css">
   </head>
   <body>
     <main>
-      <header>
-        <div>
-          <h1>Spark Translate</h1>
-          <p id="subtitle">Local Codex bridge - <span id="version">v--</span></p>
+      <header class="popup-header">
+        <div class="brand">
+          <svg class="brand-mark" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 4 L20 19 L4 19 Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="rgba(42,111,219,0.12)"/>
+          </svg>
+          <h1>Prism</h1>
         </div>
-        <span id="health" class="health">Checking</span>
+        <button id="kebab" class="kebab" type="button" aria-label="More settings" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
       </header>
 
-      <section id="serverPanel" class="panel">
-        <div>
-          <span class="label">Server</span>
-          <strong id="serverState">Checking...</strong>
+      <button id="translate" class="translate-card">
+        <span>
+          <strong>Translate this page</strong>
+          <small id="translateSubtitle">English detected → 中文 (简体)</small>
+        </span>
+        <span class="toggle-visual" aria-hidden="true"></span>
+      </button>
+
+      <section class="settings-list">
+        <label class="setting-row">
+          <span>Target language</span>
+          <select id="targetLanguage">
+            <option value="Chinese (Simplified)">中文 (简体)</option>
+            <option value="Chinese (Traditional)">中文 (繁体)</option>
+            <option value="English">English</option>
+            <option value="Japanese">日本語</option>
+            <option value="Korean">한국어</option>
+            <option value="French">Français</option>
+            <option value="German">Deutsch</option>
+            <option value="Spanish">Español</option>
+            <option value="Portuguese">Português</option>
+            <option value="Italian">Italiano</option>
+            <option value="Russian">Русский</option>
+            <option value="Arabic">العربية</option>
+            <option value="Hindi">हिन्दी</option>
+            <option value="Vietnamese">Tiếng Việt</option>
+            <option value="Thai">ไทย</option>
+            <option value="Indonesian">Indonesia</option>
+            <option value="__custom__">Custom…</option>
+          </select>
+        </label>
+        <input id="customTargetLanguage" class="custom-language" placeholder="e.g. Polish, Dutch, Brazilian Portuguese" autocomplete="off" hidden>
+
+        <div class="setting-row">
+          <span>Display</span>
+          <div class="segmented" role="group" aria-label="Display mode">
+            <button type="button" data-mode="bilingual">Bilingual</button>
+            <button type="button" data-mode="replace">Replace</button>
+          </div>
+          <select id="mode" hidden>
+            <option value="bilingual">Bilingual</option>
+            <option value="replace">Replace original</option>
+          </select>
         </div>
-        <span id="latency" class="meta">--</span>
+
+        <button id="styleToggle" class="setting-row setting-row-button" type="button" aria-expanded="false">
+          <span>Bilingual style</span>
+          <span class="chip"><span id="styleLabel">Dashed underline</span><span class="caret" aria-hidden="true"></span></span>
+        </button>
+        <select id="bilingualStyle" hidden>
+          <option value="dashed">Dashed underline</option>
+          <option value="dotted">Dotted underline</option>
+          <option value="wavy">Wavy underline</option>
+          <option value="highlight">Highlight</option>
+          <option value="soft-box">Soft box</option>
+          <option value="blur">Blur</option>
+        </select>
+
+        <label class="switch-row">
+          <span>Translate on selection</span>
+          <input id="translateSelection" type="checkbox" checked>
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
+        <label class="switch-row">
+          <span>Floating button</span>
+          <input id="showFloatingButton" type="checkbox" checked>
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
+        <label class="switch-row">
+          <span>Auto-translate this site</span>
+          <input id="autoTranslateSite" type="checkbox">
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
       </section>
 
-      <button id="translate" class="primary">Translate Page</button>
+      <section id="stylePicker" class="style-picker" aria-label="Bilingual style picker" hidden>
+        <div class="section-head">
+          <strong>Translation style</strong>
+          <span>applies to bilingual mode</span>
+        </div>
+        <div class="style-grid">
+          <button class="style-card" type="button" data-style="dashed">
+            <span class="sample-source">The galaxies formed early.</span>
+            <span class="sample-translation sample-dashed">这些星系形成得很早。</span>
+            <span class="choice-row"><span class="choice-dot"></span><strong>Dashed underline</strong></span>
+          </button>
+          <button class="style-card" type="button" data-style="dotted">
+            <span class="sample-source">The galaxies formed early.</span>
+            <span class="sample-translation sample-dotted">这些星系形成得很早。</span>
+            <span class="choice-row"><span class="choice-dot"></span><strong>Dotted underline</strong></span>
+          </button>
+          <button class="style-card" type="button" data-style="wavy">
+            <span class="sample-source">The galaxies formed early.</span>
+            <span class="sample-translation sample-wavy">这些星系形成得很早。</span>
+            <span class="choice-row"><span class="choice-dot"></span><strong>Wavy underline</strong></span>
+          </button>
+          <button class="style-card" type="button" data-style="highlight">
+            <span class="sample-source">The galaxies formed early.</span>
+            <span class="sample-translation sample-highlight">这些星系形成得很早。</span>
+            <span class="choice-row"><span class="choice-dot"></span><strong>Highlight</strong></span>
+          </button>
+          <button class="style-card" type="button" data-style="soft-box">
+            <span class="sample-source">The galaxies formed early.</span>
+            <span class="sample-translation sample-soft-box">这些星系形成得很早。</span>
+            <span class="choice-row"><span class="choice-dot"></span><strong>Soft box</strong></span>
+          </button>
+          <button class="style-card" type="button" data-style="blur">
+            <span class="sample-source">The galaxies formed early.</span>
+            <span class="sample-translation sample-blur">这些星系形成得很早。</span>
+            <span class="choice-row"><span class="choice-dot"></span><strong>Blur</strong></span>
+          </button>
+        </div>
+      </section>
 
-      <div class="actions">
-        <button id="clear" class="secondary">Clear</button>
-        <button id="recheck" class="secondary">Recheck</button>
-      </div>
+      <section id="serverPanel" class="server-footer">
+        <div class="server-copy">
+          <span class="status-dot" aria-hidden="true"></span>
+          <strong id="serverState">Checking…</strong>
+        </div>
+        <span id="health" class="conn">Checking</span>
+      </section>
 
-      <label>
-        Target
-        <select id="targetLanguage">
-          <option value="Chinese (Simplified)">Chinese (Simplified)</option>
-          <option value="Chinese (Traditional)">Chinese (Traditional)</option>
-          <option value="English">English</option>
-          <option value="Japanese">Japanese</option>
-          <option value="Korean">Korean</option>
-          <option value="French">French</option>
-          <option value="German">German</option>
-          <option value="Spanish">Spanish</option>
-          <option value="Portuguese">Portuguese</option>
-          <option value="Italian">Italian</option>
-          <option value="Russian">Russian</option>
-          <option value="Arabic">Arabic</option>
-          <option value="Hindi">Hindi</option>
-          <option value="Vietnamese">Vietnamese</option>
-          <option value="Thai">Thai</option>
-          <option value="Indonesian">Indonesian</option>
-          <option value="__custom__">Custom...</option>
-        </select>
-        <input id="customTargetLanguage" class="custom-language" placeholder="e.g. Polish, Dutch, Brazilian Portuguese" autocomplete="off" hidden>
-      </label>
-
-      <label>
-        Mode
-        <select id="mode">
-          <option value="bilingual">Bilingual</option>
-          <option value="replace">Replace original</option>
-        </select>
-      </label>
-
-      <details>
-        <summary>Advanced</summary>
-        <label>
-          Local server
+      <section id="overflow" class="overflow" hidden>
+        <label class="stacked-field">
+          <span>Local server</span>
           <input id="endpoint" value="http://127.0.0.1:8787" autocomplete="off">
         </label>
+        <div class="overflow-meta"><span>Latency</span><span id="latency" class="meta">--</span></div>
         <label class="checkbox">
           <input id="clearPrevious" type="checkbox" checked>
           Clear before translating
@@ -77,15 +156,14 @@
           <input id="viewportFirst" type="checkbox" checked>
           Translate visible text first
         </label>
-        <label class="checkbox">
-          <input id="showFloatingButton" type="checkbox" checked>
-          Show floating button
-        </label>
-      </details>
-
-      <section id="offlineHelp" class="offline" hidden>
-        <p>Start the local server from this repository, then recheck.</p>
-        <button id="copyCommand" class="secondary">Copy Start Command</button>
+        <div class="actions">
+          <button id="clear" class="secondary">Clear page</button>
+          <button id="recheck" class="secondary">Recheck</button>
+        </div>
+        <div id="offlineHelp" class="offline" hidden>
+          <p>Start the local server from this repository, then recheck.</p>
+          <button id="copyCommand" class="secondary">Copy start command</button>
+        </div>
       </section>
 
       <p id="status" role="status"></p>
