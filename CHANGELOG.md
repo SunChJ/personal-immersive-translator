@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.7 - 2026-06-29
+
+- Prevented replace-mode auto-updates from retriggering themselves after applying translated text.
+- Re-ran full page translation after SPA route changes so long pages continue using lazy translation instead of stopping after the dynamic-update cap.
+
 ## 0.2.6 - 2026-06-29
 
 - Prevented bilingual translation blocks from intercepting page clicks.

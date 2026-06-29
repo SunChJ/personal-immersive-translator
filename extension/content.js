@@ -4,6 +4,12 @@ const PIT_STATE = {
   dynamicObserver: null,
   dynamicRoots: [],
   dynamicTimer: null,
+  dynamicRouteUrl: location.href,
+  routePollTimer: null,
+  routeSettlingTimers: [],
+  routeEventHandler: null,
+  routeTranslationTimer: null,
+  routeUpdatePending: false,
   floating: null,
   floatingStatusTimer: null,
   lazyObserver: null,
@@ -79,23 +85,16 @@ const PIT_FORCE_TEXT_SELECTOR = [
 ].join(",");
 
 const PIT_INTERACTIVE_ANCESTOR_SELECTOR = [
-  "a[href]",
   "button",
-  "label",
-  "summary",
   "select",
   "textarea",
   "[role='button']",
   "[role='checkbox']",
-  "[role='link']",
   "[role='menuitem']",
   "[role='option']",
   "[role='radio']",
   "[role='switch']",
-  "[role='tab']",
-  "[aria-expanded]",
-  "[aria-haspopup]",
-  "[onclick]"
+  "[role='tab']"
 ].join(",");
 
 const PIT_SKIP_TAGS = new Set([
@@ -254,7 +253,11 @@ async function translatePage(options) {
       clearTranslations();
     }
 
-    stopDynamicTranslationObserver();
+    if (options.preserveDynamicObserver && PIT_STATE.dynamicObserver) {
+      PIT_STATE.dynamicRoots = [];
+    } else {
+      stopDynamicTranslationObserver();
+    }
     stopLazyTranslationObserver();
 
     const blocks = collectTranslationBlocks(document.body, {
@@ -279,7 +282,11 @@ async function translatePage(options) {
     updateFloatingState();
     setFloatingStatus(deferred.length > 0 ? `Done: ${translated}, queued ${deferred.length}` : `Done: ${translated}`);
     if (translated > 0) {
-      startDynamicTranslationObserver(options);
+      if (options.preserveDynamicObserver && PIT_STATE.dynamicObserver) {
+        PIT_STATE.dynamicRouteUrl = location.href;
+      } else {
+        startDynamicTranslationObserver(options);
+      }
     }
     return { translated, total: orderedBlocks.length, deferred: deferred.length };
   } finally {
@@ -1112,6 +1119,7 @@ function prepareStableTranslationSurfaces(entries, mode) {
     const slot = document.createElement("div");
     slot.className = "pit-translation pit-translation-pending";
     slot.dataset.pitSkip = "true";
+    slot.dataset.pitPlacement = translationSlotPlacement(entry);
     renderPendingTranslationSlot(slot);
     applyInheritedTextStyle(entry.element, slot);
     slot.style.minHeight = estimateTranslationSlotHeight(entry);
@@ -1221,13 +1229,17 @@ function findTranslationSlot(entry) {
   }
 
   const element = entry.element;
+  const child = element.querySelector?.(":scope > .pit-translation");
+  if (child) {
+    return child;
+  }
+
   const sibling = element.nextElementSibling;
   if (sibling?.classList?.contains("pit-translation")) {
     return sibling;
   }
 
-  const child = element.querySelector?.(":scope > .pit-translation");
-  return child || null;
+  return null;
 }
 
 function insertTranslationSlot(entry, slot) {
@@ -1239,6 +1251,11 @@ function insertTranslationSlot(entry, slot) {
   }
 
   const element = entry.element;
+  if (translationSlotPlacement(entry) === "inside") {
+    element.appendChild(slot);
+    return;
+  }
+
   const listParent = element.closest("li");
   if (element === listParent) {
     element.appendChild(slot);
@@ -1246,6 +1263,23 @@ function insertTranslationSlot(entry, slot) {
   }
 
   element.parentNode.insertBefore(slot, element.nextSibling);
+}
+
+function translationSlotPlacement(entry) {
+  if (entry.kind === "tweet-segment") {
+    return "inside";
+  }
+
+  const tagName = entry.element.tagName.toLowerCase();
+  if (["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "figcaption", "caption", "dt", "dd", "summary", "td", "th"].includes(tagName)) {
+    return "inside";
+  }
+
+  if (entry.kind === "walked" && !entry.element.matches("main, article, section, body")) {
+    return "inside";
+  }
+
+  return "after";
 }
 
 function lockElementHeight(element) {
@@ -1326,6 +1360,7 @@ function applyTranslations(batch, translations, mode) {
 
     if (mode === "replace") {
       entry.element.dataset.pitTranslated = "true";
+      markOwnReplaceMutation(entry.element);
       entry.element.textContent = translation;
       unlockElementHeightSoon(entry.element);
       return;
@@ -1334,6 +1369,7 @@ function applyTranslations(batch, translations, mode) {
     const translationBlock = entry.translationSlot || document.createElement("div");
     translationBlock.className = "pit-translation pit-translation-ready";
     translationBlock.dataset.pitSkip = "true";
+    translationBlock.dataset.pitPlacement = translationSlotPlacement(entry);
     translationBlock.textContent = translation;
     translationBlock.removeAttribute("aria-label");
     translationBlock.removeAttribute("role");
@@ -1481,8 +1517,14 @@ function startDynamicTranslationObserver(options) {
   }
 
   stopDynamicTranslationObserver();
+  PIT_STATE.dynamicRouteUrl = location.href;
   const observer = new MutationObserver((mutations) => {
-    if (!hasPageTranslations()) {
+    if (!isAutoTranslationActive()) {
+      return;
+    }
+
+    if (PIT_STATE.routeUpdatePending) {
+      scheduleRouteFullPageTranslation(options, 700);
       return;
     }
 
@@ -1492,16 +1534,27 @@ function startDynamicTranslationObserver(options) {
     }
 
     PIT_STATE.dynamicRoots = mergeScanRoots(PIT_STATE.dynamicRoots.concat(roots));
-    scheduleDynamicTranslation(options, PIT_STATE.running ? 500 : 900);
+    scheduleDynamicTranslation(options, PIT_STATE.running ? 400 : 250);
   });
 
   observer.observe(document.body, {
     childList: true,
     subtree: true,
+    characterData: true,
     attributes: true,
     attributeFilter: ["class", "style", "hidden", "aria-hidden"]
   });
   PIT_STATE.dynamicObserver = observer;
+  startRouteTranslationWatcher(options);
+}
+
+function markOwnReplaceMutation(element) {
+  element.dataset.pitApplyingReplace = "true";
+  window.setTimeout(() => {
+    if (element.dataset.pitApplyingReplace === "true") {
+      delete element.dataset.pitApplyingReplace;
+    }
+  }, 500);
 }
 
 function scheduleDynamicTranslation(options, delayMs) {
@@ -1526,15 +1579,31 @@ function stopDynamicTranslationObserver() {
   PIT_STATE.dynamicRoots = [];
   window.clearTimeout(PIT_STATE.dynamicTimer);
   PIT_STATE.dynamicTimer = null;
+  PIT_STATE.routeUpdatePending = false;
+  stopRouteTranslationWatcher();
 }
 
 function collectMutationScanRoots(mutations) {
   const roots = [];
 
   mutations.forEach((mutation) => {
+    if (mutation.type === "characterData") {
+      const parent = mutation.target.parentElement;
+      if (parent && normalizeText(mutation.target.nodeValue || "").length >= 4) {
+        const root = prepareDynamicScanRoot(parent, { resetTranslatedAncestor: true });
+        if (root) {
+          roots.push(root);
+        }
+      }
+      return;
+    }
+
     if (mutation.type === "attributes") {
-      if (mutation.target instanceof HTMLElement && !shouldSkipElement(mutation.target, PIT_DYNAMIC_SKIP_OPTIONS)) {
-        roots.push(resolveScanRoot(mutation.target));
+      if (mutation.target instanceof HTMLElement) {
+        const root = prepareDynamicScanRoot(mutation.target, { resetTranslatedAncestor: false });
+        if (root) {
+          roots.push(root);
+        }
       }
       return;
     }
@@ -1542,19 +1611,155 @@ function collectMutationScanRoots(mutations) {
     Array.from(mutation.addedNodes).forEach((node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentElement;
-        if (parent && normalizeText(node.nodeValue || "").length >= 4 && !shouldSkipElement(parent, PIT_DYNAMIC_SKIP_OPTIONS)) {
-          roots.push(resolveScanRoot(parent));
+        if (parent && normalizeText(node.nodeValue || "").length >= 4) {
+          const root = prepareDynamicScanRoot(parent, { resetTranslatedAncestor: true });
+          if (root) {
+            roots.push(root);
+          }
         }
         return;
       }
 
-      if (node instanceof HTMLElement && !shouldSkipElement(node, PIT_DYNAMIC_SKIP_OPTIONS)) {
-        roots.push(resolveScanRoot(node));
+      if (node instanceof HTMLElement && normalizeText(node.textContent || "").length >= 4) {
+        const root = prepareDynamicScanRoot(node, { resetTranslatedAncestor: true });
+        if (root) {
+          roots.push(root);
+        }
       }
     });
   });
 
   return mergeScanRoots(roots);
+}
+
+function prepareDynamicScanRoot(element, options = {}) {
+  if (!element || element.closest(".pit-translation, #pit-floating, [data-pit-skip]")) {
+    return null;
+  }
+
+  if (element.closest("[data-pit-applying-replace='true']")) {
+    return null;
+  }
+
+  const translatedAncestor = element.closest("[data-pit-translated='true']");
+  if (translatedAncestor instanceof HTMLElement) {
+    if (options.resetTranslatedAncestor) {
+      resetTranslationForElement(translatedAncestor);
+      return translatedAncestor;
+    }
+    return null;
+  }
+
+  if (shouldSkipElement(element, PIT_DYNAMIC_SKIP_OPTIONS)) {
+    return null;
+  }
+
+  return resolveScanRoot(element);
+}
+
+function startRouteTranslationWatcher(options) {
+  stopRouteTranslationWatcher();
+
+  const handler = () => handlePossibleRouteChange(options);
+  PIT_STATE.routeEventHandler = handler;
+  window.addEventListener("popstate", handler);
+  window.addEventListener("hashchange", handler);
+  PIT_STATE.routePollTimer = window.setInterval(handler, 300);
+}
+
+function stopRouteTranslationWatcher() {
+  if (PIT_STATE.routeEventHandler) {
+    window.removeEventListener("popstate", PIT_STATE.routeEventHandler);
+    window.removeEventListener("hashchange", PIT_STATE.routeEventHandler);
+    PIT_STATE.routeEventHandler = null;
+  }
+
+  window.clearInterval(PIT_STATE.routePollTimer);
+  PIT_STATE.routePollTimer = null;
+  PIT_STATE.routeSettlingTimers.forEach((timer) => window.clearTimeout(timer));
+  PIT_STATE.routeSettlingTimers = [];
+  window.clearTimeout(PIT_STATE.routeTranslationTimer);
+  PIT_STATE.routeTranslationTimer = null;
+}
+
+function handlePossibleRouteChange(options) {
+  if (!isAutoTranslationActive() || location.href === PIT_STATE.dynamicRouteUrl) {
+    return;
+  }
+
+  PIT_STATE.dynamicRouteUrl = location.href;
+  PIT_STATE.routeUpdatePending = true;
+  resetTranslationArtifactsForAutoUpdate();
+  scheduleRouteFullPageTranslation(options, 700);
+  [300, 900, 1800, 3000].forEach((delay) => {
+    const timer = window.setTimeout(() => {
+      PIT_STATE.routeSettlingTimers = PIT_STATE.routeSettlingTimers.filter((item) => item !== timer);
+      scheduleRouteFullPageTranslation(options, PIT_STATE.running ? 500 : 700);
+    }, delay);
+    PIT_STATE.routeSettlingTimers.push(timer);
+  });
+  setFloatingStatus("Route changed, updating...");
+}
+
+function scheduleRouteFullPageTranslation(options, delayMs) {
+  if (!document.body || !PIT_STATE.dynamicObserver) {
+    return;
+  }
+
+  window.clearTimeout(PIT_STATE.routeTranslationTimer);
+  PIT_STATE.routeTranslationTimer = window.setTimeout(() => {
+    if (PIT_STATE.running) {
+      scheduleRouteFullPageTranslation(options, 500);
+      return;
+    }
+
+    PIT_STATE.routeTranslationTimer = null;
+    PIT_STATE.routeUpdatePending = false;
+    translatePage({
+      ...options,
+      clearPrevious: false,
+      preserveDynamicObserver: true
+    }).catch((error) => {
+      setFloatingStatus("Route update failed");
+    });
+  }, delayMs);
+}
+
+function isAutoTranslationActive() {
+  return PIT_STATE.translated || hasPageTranslations() || Boolean(PIT_STATE.dynamicObserver);
+}
+
+function resetTranslationArtifactsForAutoUpdate() {
+  stopLazyTranslationObserver();
+  document.querySelectorAll(".pit-translation").forEach((node) => node.remove());
+  document.querySelectorAll("[data-pit-translated='true']").forEach((node) => {
+    node.dataset.pitTranslated = "false";
+  });
+  document.querySelectorAll("[data-pit-deferred='true']").forEach((node) => {
+    delete node.dataset.pitDeferred;
+  });
+  document.querySelectorAll("[data-pit-height-locked='true']").forEach((node) => {
+    unlockElementHeight(node);
+  });
+  document.querySelectorAll("[data-pit-applying-replace='true']").forEach((node) => {
+    delete node.dataset.pitApplyingReplace;
+  });
+  PIT_STATE.translated = false;
+  updateFloatingState();
+}
+
+function resetTranslationForElement(element) {
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+
+  element.querySelectorAll(":scope > .pit-translation").forEach((node) => node.remove());
+  if (element.nextElementSibling?.classList?.contains("pit-translation")) {
+    element.nextElementSibling.remove();
+  }
+  element.dataset.pitTranslated = "false";
+  delete element.dataset.pitDeferred;
+  unlockElementHeight(element);
 }
 
 function resolveScanRoot(element) {
@@ -2208,6 +2413,12 @@ function injectStyles() {
       contain: layout style paint;
     }
 
+    .pit-translation[data-pit-placement="inside"] {
+      flex-basis: 100%;
+      grid-column: 1 / -1;
+      margin: 0.28em 0 0;
+    }
+
     .pit-translation-pending {
       display: flex;
       align-items: center;
@@ -2222,6 +2433,13 @@ function injectStyles() {
       text-decoration-style: dashed;
       text-decoration-thickness: 1px;
       text-underline-offset: 0.18em;
+    }
+
+    .pit-translation-ready[data-pit-placement="inside"]::before,
+    .pit-translation-pending[data-pit-placement="inside"]::before {
+      content: "";
+      display: block;
+      height: 0;
     }
 
     .pit-translation-failed {
