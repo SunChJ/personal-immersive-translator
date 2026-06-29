@@ -332,7 +332,7 @@ async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translat
       translated += batch.length;
     }
   } catch (error) {
-    removePendingTranslationSurfaces(orderedBlocks, mode);
+    markPendingTranslationSurfacesFailed(orderedBlocks, mode, options, error);
     throw error;
   }
 
@@ -1054,12 +1054,22 @@ function prepareStableTranslationSurfaces(entries, mode) {
     const slot = document.createElement("div");
     slot.className = "pit-translation pit-translation-pending";
     slot.dataset.pitSkip = "true";
-    slot.setAttribute("aria-hidden", "true");
+    renderPendingTranslationSlot(slot);
     applyInheritedTextStyle(entry.element, slot);
     slot.style.minHeight = estimateTranslationSlotHeight(entry);
     insertTranslationSlot(entry, slot);
     entry.translationSlot = slot;
   });
+}
+
+function renderPendingTranslationSlot(slot) {
+  slot.className = "pit-translation pit-translation-pending";
+  slot.dataset.pitSkip = "true";
+  slot.setAttribute("aria-label", "Translation loading");
+  slot.innerHTML = `
+    <span class="pit-translation-spinner" aria-hidden="true"></span>
+    <span class="pit-translation-status-text">Translating...</span>
+  `;
 }
 
 function removePendingTranslationSurfaces(entries, mode) {
@@ -1074,6 +1084,77 @@ function removePendingTranslationSurfaces(entries, mode) {
       entry.translationSlot = null;
     }
   });
+}
+
+function markPendingTranslationSurfacesFailed(entries, mode, options, error) {
+  entries.forEach((entry) => {
+    if (mode === "replace") {
+      unlockElementHeight(entry.element);
+      return;
+    }
+
+    if (entry.translationSlot?.classList.contains("pit-translation-pending")) {
+      renderFailedTranslationSlot(entry, options, error);
+    }
+  });
+}
+
+function renderFailedTranslationSlot(entry, options, error) {
+  const slot = entry.translationSlot;
+  if (!slot) {
+    return;
+  }
+
+  slot.className = "pit-translation pit-translation-failed";
+  slot.dataset.pitSkip = "true";
+  slot.removeAttribute("aria-label");
+  slot.setAttribute("role", "group");
+  slot.setAttribute("aria-label", "Translation failed");
+  slot.innerHTML = `
+    <span class="pit-translation-status-text">Translation failed</span>
+    <button class="pit-translation-retry" type="button">Retry</button>
+  `;
+
+  const retry = slot.querySelector(".pit-translation-retry");
+  retry.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    retryTranslationEntry(entry, options).catch((retryError) => {
+      renderFailedTranslationSlot(entry, options, retryError);
+      setFloatingStatus("Retry failed");
+    });
+  });
+
+  slot.title = error instanceof Error ? error.message : String(error || "Translation failed");
+}
+
+async function retryTranslationEntry(entry, options) {
+  if (PIT_STATE.running) {
+    setFloatingStatus("Already running");
+    return;
+  }
+
+  if (!entry.element.parentNode) {
+    entry.translationSlot?.remove();
+    entry.translationSlot = null;
+    return;
+  }
+
+  PIT_STATE.running = true;
+  PIT_STATE.cancelRequested = false;
+  updateFloatingState("running");
+  renderPendingTranslationSlot(entry.translationSlot);
+
+  try {
+    const translated = await translateBlocks([entry], { ...options, clearPrevious: false }, "Retrying");
+    if (translated > 0) {
+      PIT_STATE.translated = true;
+      setFloatingStatus("Retried");
+    }
+  } finally {
+    PIT_STATE.running = false;
+    updateFloatingState();
+  }
 }
 
 function findTranslationSlot(entry) {
@@ -1196,7 +1277,9 @@ function applyTranslations(batch, translations, mode) {
     translationBlock.className = "pit-translation pit-translation-ready";
     translationBlock.dataset.pitSkip = "true";
     translationBlock.textContent = translation;
-    translationBlock.removeAttribute("aria-hidden");
+    translationBlock.removeAttribute("aria-label");
+    translationBlock.removeAttribute("role");
+    translationBlock.removeAttribute("title");
     applyInheritedTextStyle(entry.element, translationBlock);
     entry.element.dataset.pitTranslated = "true";
 
@@ -2044,10 +2127,6 @@ function injectStyles() {
       margin: 0.22em 0 0.9em;
       letter-spacing: 0;
       opacity: 0.68;
-      text-decoration-line: underline;
-      text-decoration-style: dashed;
-      text-decoration-thickness: 1px;
-      text-underline-offset: 0.18em;
       white-space: pre-line;
       word-break: normal;
       overflow-wrap: anywhere;
@@ -2056,12 +2135,78 @@ function injectStyles() {
     }
 
     .pit-translation-pending {
-      opacity: 0;
-      pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: 0.48em;
+      opacity: 0.54;
+      text-decoration: none;
     }
 
     .pit-translation-ready {
       opacity: 0.68;
+      text-decoration-line: underline;
+      text-decoration-style: dashed;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.18em;
+    }
+
+    .pit-translation-failed {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55em;
+      width: fit-content;
+      max-width: 100%;
+      min-height: auto !important;
+      padding: 0.24em 0.55em;
+      border: 1px solid rgba(180, 35, 24, 0.25);
+      border-radius: 6px;
+      background: rgba(255, 241, 241, 0.92);
+      color: #b42318 !important;
+      opacity: 1;
+      text-decoration: none;
+      white-space: normal;
+      contain: layout style paint;
+    }
+
+    .pit-translation-spinner {
+      flex: 0 0 auto;
+      width: 0.92em;
+      height: 0.92em;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 999px;
+      opacity: 0.78;
+      animation: pit-spin 780ms linear infinite;
+    }
+
+    .pit-translation-status-text {
+      min-width: 0;
+    }
+
+    .pit-translation-retry {
+      flex: 0 0 auto;
+      width: auto;
+      min-width: 0;
+      min-height: 0;
+      padding: 0.12em 0.48em;
+      border: 1px solid currentColor;
+      border-radius: 5px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 700;
+      line-height: 1.35;
+      cursor: pointer;
+    }
+
+    .pit-translation-retry:hover {
+      background: rgba(180, 35, 24, 0.08);
+    }
+
+    @keyframes pit-spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     li > .pit-translation {
