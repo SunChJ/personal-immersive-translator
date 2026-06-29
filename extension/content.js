@@ -46,6 +46,10 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["韩语", "Korean"]
 ]);
 const PIT_LAZY_ROOT_MARGIN = 600;
+const PIT_DYNAMIC_SKIP_OPTIONS = {
+  allowTranslatedAncestors: true,
+  allowDeferredAncestors: true
+};
 
 const PIT_DIRECT_TEXT_SELECTOR = [
   "h1",
@@ -349,6 +353,10 @@ function collectTranslationBlocks(root, options) {
     blocks,
     textFingerprints,
     minChars,
+    skipOptions: {
+      allowTranslatedAncestors: Boolean(options.allowTranslatedAncestors),
+      allowDeferredAncestors: Boolean(options.allowDeferredAncestors)
+    },
     measurements: createMeasurementCache(),
     collectedElements: []
   };
@@ -374,7 +382,7 @@ function collectTranslationBlocks(root, options) {
         kind: "walked",
         allowChildBlocks: false
       });
-    }, context.measurements);
+    }, context.measurements, context.skipOptions);
 
     return blocks.sort((a, b) => {
       if (a.element === b.element) {
@@ -470,7 +478,7 @@ function collectTweetTextSegments(root, context) {
   queryElementsIncludingRoot(root, "[data-testid='tweetText']").forEach((element) => {
     if (
       context.seen.has(element) ||
-      shouldSkipElement(element) ||
+      shouldSkipElement(element, context.skipOptions) ||
       hasExistingTranslation(element) ||
       !isVisible(element, context.measurements) ||
       isAssistiveOnlyElement(element, context.measurements)
@@ -478,7 +486,7 @@ function collectTweetTextSegments(root, context) {
       return;
     }
 
-    const segments = extractTweetTextSegments(element)
+    const segments = extractTweetTextSegments(element, context.skipOptions)
       .map((segment, index) => ({
         ...segment,
         text: normalizeReadableText(segment.text),
@@ -521,7 +529,7 @@ function collectTweetTextSegments(root, context) {
   });
 }
 
-function extractTweetTextSegments(element) {
+function extractTweetTextSegments(element, skipOptions) {
   const segments = [];
   let text = "";
   let anchor = null;
@@ -567,7 +575,7 @@ function extractTweetTextSegments(element) {
       return;
     }
 
-    if (node !== element && shouldSkipElement(node)) {
+    if (node !== element && shouldSkipElement(node, skipOptions)) {
       return;
     }
 
@@ -580,7 +588,7 @@ function extractTweetTextSegments(element) {
   return segments;
 }
 
-function walkParagraphCandidates(root, visit, measurements) {
+function walkParagraphCandidates(root, visit, measurements, skipOptions) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
     acceptNode(node) {
       if (!(node instanceof HTMLElement)) {
@@ -597,14 +605,14 @@ function walkParagraphCandidates(root, visit, measurements) {
 
   let element = walker.currentNode;
   while (element) {
-    if (isParagraphCandidate(element, measurements)) {
+    if (isParagraphCandidate(element, measurements, skipOptions)) {
       visit(element);
     }
     element = walker.nextNode();
   }
 }
 
-function isParagraphCandidate(element, measurements) {
+function isParagraphCandidate(element, measurements, skipOptions) {
   if (!(element instanceof HTMLElement) || element.matches(PIT_DIRECT_TEXT_SELECTOR)) {
     return false;
   }
@@ -622,13 +630,13 @@ function isParagraphCandidate(element, measurements) {
     return false;
   }
 
-  return hasDirectReadableText(element, measurements);
+  return hasDirectReadableText(element, measurements, skipOptions);
 }
 
 function pushTranslationBlock(element, context) {
   if (
     context.seen.has(element) ||
-    shouldSkipElement(element) ||
+    shouldSkipElement(element, context.skipOptions) ||
     hasExistingTranslation(element) ||
     !isVisible(element, context.measurements) ||
     isAssistiveOnlyElement(element, context.measurements)
@@ -644,7 +652,7 @@ function pushTranslationBlock(element, context) {
     return false;
   }
 
-  const text = extractReadableText(element, context.measurements);
+  const text = extractReadableText(element, context.measurements, context.skipOptions);
   if (text.length < context.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text)) {
     return false;
   }
@@ -695,25 +703,39 @@ function prioritizeBlocks(blocks, viewportFirst) {
     });
 }
 
-function shouldSkipElement(element) {
+function shouldSkipElement(element, options = {}) {
   if (isHardSkipElement(element)) {
     return true;
   }
 
+  if (options.allowTranslatedAncestors && element.dataset?.pitTranslated === "true") {
+    return true;
+  }
+
+  if (options.allowDeferredAncestors && element.dataset?.pitDeferred === "true") {
+    return true;
+  }
+
+  const selectors = [
+    "[contenteditable='true']",
+    "[contenteditable='']",
+    "[data-pit-skip]",
+    "[translate='no']",
+    ".notranslate",
+    ".pit-translation",
+    "#pit-floating"
+  ];
+
+  if (!options.allowTranslatedAncestors) {
+    selectors.push("[data-pit-translated='true']");
+  }
+
+  if (!options.allowDeferredAncestors) {
+    selectors.push("[data-pit-deferred='true']");
+  }
+
   return Boolean(
-    element.closest(
-      [
-        "[contenteditable='true']",
-        "[contenteditable='']",
-        "[data-pit-skip]",
-        "[data-pit-translated='true']",
-        "[data-pit-deferred='true']",
-        "[translate='no']",
-        ".notranslate",
-        ".pit-translation",
-        "#pit-floating"
-      ].join(",")
-    )
+    element.closest(selectors.join(","))
   );
 }
 
@@ -802,17 +824,17 @@ function hasParagraphLikeChild(element) {
   );
 }
 
-function hasDirectReadableText(element, measurements) {
+function hasDirectReadableText(element, measurements, skipOptions) {
   let text = "";
 
   element.childNodes.forEach((child) => {
-    text += extractInlineReadableText(child, element, measurements);
+    text += extractInlineReadableText(child, element, measurements, skipOptions);
   });
 
   return normalizeText(text).length >= 4;
 }
 
-function extractInlineReadableText(node, rootElement, measurements) {
+function extractInlineReadableText(node, rootElement, measurements, skipOptions) {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.nodeValue || "";
   }
@@ -821,7 +843,7 @@ function extractInlineReadableText(node, rootElement, measurements) {
     return "";
   }
 
-  if (node !== rootElement && shouldSkipElement(node)) {
+  if (node !== rootElement && shouldSkipElement(node, skipOptions)) {
     return "";
   }
 
@@ -838,21 +860,21 @@ function extractInlineReadableText(node, rootElement, measurements) {
 
   let text = "";
   node.childNodes.forEach((child) => {
-    text += extractInlineReadableText(child, rootElement, measurements);
+    text += extractInlineReadableText(child, rootElement, measurements, skipOptions);
   });
   return text;
 }
 
-function extractReadableText(element, measurements) {
+function extractReadableText(element, measurements, skipOptions) {
   if (element.matches("[data-testid='tweetText']")) {
     return normalizeReadableText(element.innerText || element.textContent || "");
   }
 
-  const text = extractReadableTextFromNode(element, element, measurements);
+  const text = extractReadableTextFromNode(element, element, measurements, skipOptions);
   return normalizeReadableText(text);
 }
 
-function extractReadableTextFromNode(node, rootElement, measurements) {
+function extractReadableTextFromNode(node, rootElement, measurements, skipOptions) {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.nodeValue || "";
   }
@@ -861,7 +883,10 @@ function extractReadableTextFromNode(node, rootElement, measurements) {
     return "";
   }
 
-  if (node !== rootElement && (shouldSkipElement(node) || !isVisible(node, measurements) || isAssistiveOnlyElement(node, measurements))) {
+  if (
+    node !== rootElement &&
+    (shouldSkipElement(node, skipOptions) || !isVisible(node, measurements) || isAssistiveOnlyElement(node, measurements))
+  ) {
     return "";
   }
 
@@ -872,7 +897,7 @@ function extractReadableTextFromNode(node, rootElement, measurements) {
 
   let text = "";
   node.childNodes.forEach((child) => {
-    text += extractReadableTextFromNode(child, rootElement, measurements);
+    text += extractReadableTextFromNode(child, rootElement, measurements, skipOptions);
     if (child.nodeType === Node.ELEMENT_NODE && child instanceof HTMLElement) {
       const display = getCachedStyle(child, measurements).display;
       if (PIT_BLOCK_DISPLAYS.has(display)) {
@@ -1424,7 +1449,7 @@ function startDynamicTranslationObserver(options) {
 
   stopDynamicTranslationObserver();
   const observer = new MutationObserver((mutations) => {
-    if (PIT_STATE.running || !hasPageTranslations()) {
+    if (!hasPageTranslations()) {
       return;
     }
 
@@ -1434,14 +1459,7 @@ function startDynamicTranslationObserver(options) {
     }
 
     PIT_STATE.dynamicRoots = mergeScanRoots(PIT_STATE.dynamicRoots.concat(roots));
-    window.clearTimeout(PIT_STATE.dynamicTimer);
-    PIT_STATE.dynamicTimer = window.setTimeout(() => {
-      const scanRoots = PIT_STATE.dynamicRoots;
-      PIT_STATE.dynamicRoots = [];
-      translateDiscoveredBlocks(options, scanRoots).catch((error) => {
-        setFloatingStatus("Update failed");
-      });
-    }, 900);
+    scheduleDynamicTranslation(options, PIT_STATE.running ? 500 : 900);
   });
 
   observer.observe(document.body, {
@@ -1451,6 +1469,22 @@ function startDynamicTranslationObserver(options) {
     attributeFilter: ["class", "style", "hidden", "aria-hidden"]
   });
   PIT_STATE.dynamicObserver = observer;
+}
+
+function scheduleDynamicTranslation(options, delayMs) {
+  window.clearTimeout(PIT_STATE.dynamicTimer);
+  PIT_STATE.dynamicTimer = window.setTimeout(() => {
+    if (PIT_STATE.running) {
+      scheduleDynamicTranslation(options, 500);
+      return;
+    }
+
+    const scanRoots = PIT_STATE.dynamicRoots;
+    PIT_STATE.dynamicRoots = [];
+    translateDiscoveredBlocks(options, scanRoots).catch((error) => {
+      setFloatingStatus("Update failed");
+    });
+  }, delayMs);
 }
 
 function stopDynamicTranslationObserver() {
@@ -1466,7 +1500,7 @@ function collectMutationScanRoots(mutations) {
 
   mutations.forEach((mutation) => {
     if (mutation.type === "attributes") {
-      if (mutation.target instanceof HTMLElement && !shouldSkipElement(mutation.target)) {
+      if (mutation.target instanceof HTMLElement && !shouldSkipElement(mutation.target, PIT_DYNAMIC_SKIP_OPTIONS)) {
         roots.push(resolveScanRoot(mutation.target));
       }
       return;
@@ -1475,13 +1509,13 @@ function collectMutationScanRoots(mutations) {
     Array.from(mutation.addedNodes).forEach((node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentElement;
-        if (parent && normalizeText(node.nodeValue || "").length >= 4 && !shouldSkipElement(parent)) {
+        if (parent && normalizeText(node.nodeValue || "").length >= 4 && !shouldSkipElement(parent, PIT_DYNAMIC_SKIP_OPTIONS)) {
           roots.push(resolveScanRoot(parent));
         }
         return;
       }
 
-      if (node instanceof HTMLElement && !shouldSkipElement(node)) {
+      if (node instanceof HTMLElement && !shouldSkipElement(node, PIT_DYNAMIC_SKIP_OPTIONS)) {
         roots.push(resolveScanRoot(node));
       }
     });
@@ -1493,6 +1527,10 @@ function collectMutationScanRoots(mutations) {
 function resolveScanRoot(element) {
   if (!element || element === document.body) {
     return document.body;
+  }
+
+  if (element.closest("[data-pit-translated='true'], [data-pit-deferred='true']")) {
+    return element;
   }
 
   return element.closest(
@@ -1545,7 +1583,9 @@ async function translateDiscoveredBlocks(options, roots = [document.body]) {
   mergeScanRoots(roots).forEach((root) => {
     collectTranslationBlocks(root, {
       minChars: Number(options.minChars || 4),
-      mode: options.mode || "bilingual"
+      mode: options.mode || "bilingual",
+      allowTranslatedAncestors: true,
+      allowDeferredAncestors: true
     }).forEach((entry) => {
       if (seenElements.has(entry.element)) {
         return;

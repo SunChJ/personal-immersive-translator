@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5 - 2026-06-29
+
+- Added visible loading placeholders with spinner indicators while translation blocks are pending.
+- Added failed translation placeholders with per-block retry actions.
+- Fixed dynamically expanded content being skipped when it appears inside an already translated container.
+
 ## 0.2.4 - 2026-05-27
 
 - Added paragraph-level anchoring for multi-paragraph X/Twitter post bodies in bilingual mode.
