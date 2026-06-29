@@ -21,6 +21,7 @@ const PIT_STATE = {
   lazyQueuedIds: new Set(),
   lazyTimer: null,
   translated: false,
+  autoTranslateActive: false,
   nextBlockId: 1,
   lastModel: "",
   sessionId: createShortId()
@@ -305,6 +306,9 @@ async function translatePage(options) {
     }
 
     PIT_STATE.translated = translated > 0;
+    if (translated > 0) {
+      PIT_STATE.autoTranslateActive = true;
+    }
     updateFloatingState();
     setFloatingStatus(deferred.length > 0 ? `Done: ${translated}, queued ${deferred.length}` : `Done: ${translated}`);
     if (translated > 0) {
@@ -1428,6 +1432,7 @@ function clearTranslations() {
     unlockElementHeight(node);
   });
   PIT_STATE.translated = false;
+  PIT_STATE.autoTranslateActive = false;
   updateFloatingState();
   setFloatingStatus("Cleared");
 }
@@ -1733,7 +1738,7 @@ function handlePossibleRouteChange(options) {
 }
 
 function scheduleRouteFullPageTranslation(options, delayMs) {
-  if (!document.body || !PIT_STATE.dynamicObserver) {
+  if (!document.body || (!PIT_STATE.dynamicObserver && !PIT_STATE.autoTranslateActive)) {
     return;
   }
 
@@ -1757,7 +1762,7 @@ function scheduleRouteFullPageTranslation(options, delayMs) {
 }
 
 function isAutoTranslationActive() {
-  return PIT_STATE.translated || hasPageTranslations() || Boolean(PIT_STATE.dynamicObserver);
+  return PIT_STATE.autoTranslateActive || PIT_STATE.translated || hasPageTranslations() || Boolean(PIT_STATE.dynamicObserver);
 }
 
 function resetTranslationArtifactsForAutoUpdate() {
@@ -1776,7 +1781,9 @@ function resetTranslationArtifactsForAutoUpdate() {
     delete node.dataset.pitApplyingReplace;
   });
   PIT_STATE.translated = false;
-  updateFloatingState();
+  // Keep autoTranslateActive intact so the control stays "on" while we
+  // re-translate the new route; show an updating state instead of idle.
+  updateFloatingState(PIT_STATE.autoTranslateActive ? "running" : undefined);
 }
 
 function resetTranslationForElement(element) {
@@ -2722,7 +2729,7 @@ function updateFloatingState(forceMode) {
     return;
   }
 
-  const mode = forceMode || (hasPageTranslations() || PIT_STATE.translated ? "translated" : "idle");
+  const mode = forceMode || (hasPageTranslations() || PIT_STATE.translated || PIT_STATE.autoTranslateActive ? "translated" : "idle");
   const badge = root.querySelector(".pit-floating-badge");
   root.dataset.mode = mode;
   if (badge && (mode === "running" || badge.dataset.ok !== "false")) {

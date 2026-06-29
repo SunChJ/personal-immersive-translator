@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Kept the translation state active across SPA route changes: the floating control now stays on (showing an updating state) and re-translates the new route instead of resetting to untranslated.
 - Rebranded the extension to "Prism — Immersive Translator" with the triangle prism mark across the popup, floating control, and selection tooltip.
 - Added full automatic dark mode (prefers-color-scheme) for every surface, matching the Prism reference design.
 - Rebuilt the popup to the Prism reference layout: translate card with detected-language subtitle, target/display/style rows, a collapsible bilingual style picker, a Codex Spark connection footer, and a kebab overflow menu for server endpoint and advanced options.
