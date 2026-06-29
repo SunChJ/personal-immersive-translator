@@ -1,6 +1,6 @@
 {
   "name": "personal-immersive-translator",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "A personal Chrome extension for translating the current page through a local OpenAI proxy.",
   "scripts": {

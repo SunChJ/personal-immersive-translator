@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6 - 2026-06-29
+
+- Prevented bilingual translation blocks from intercepting page clicks.
+- Skipped translating interactive controls so buttons, links, tabs, menus, and expandable controls remain usable after translation.
+
 ## 0.2.5 - 2026-06-29
 
 - Added visible loading placeholders with spinner indicators while translation blocks are pending.

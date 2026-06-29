@@ -48,7 +48,8 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
 const PIT_LAZY_ROOT_MARGIN = 600;
 const PIT_DYNAMIC_SKIP_OPTIONS = {
   allowTranslatedAncestors: true,
-  allowDeferredAncestors: true
+  allowDeferredAncestors: true,
+  allowInteractiveAncestors: false
 };
 
 const PIT_DIRECT_TEXT_SELECTOR = [
@@ -75,6 +76,26 @@ const PIT_FORCE_TEXT_SELECTOR = [
   "[role='heading']",
   "[dir='auto']",
   "[lang][dir]"
+].join(",");
+
+const PIT_INTERACTIVE_ANCESTOR_SELECTOR = [
+  "a[href]",
+  "button",
+  "label",
+  "summary",
+  "select",
+  "textarea",
+  "[role='button']",
+  "[role='checkbox']",
+  "[role='link']",
+  "[role='menuitem']",
+  "[role='option']",
+  "[role='radio']",
+  "[role='switch']",
+  "[role='tab']",
+  "[aria-expanded]",
+  "[aria-haspopup]",
+  "[onclick]"
 ].join(",");
 
 const PIT_SKIP_TAGS = new Set([
@@ -355,7 +376,8 @@ function collectTranslationBlocks(root, options) {
     minChars,
     skipOptions: {
       allowTranslatedAncestors: Boolean(options.allowTranslatedAncestors),
-      allowDeferredAncestors: Boolean(options.allowDeferredAncestors)
+      allowDeferredAncestors: Boolean(options.allowDeferredAncestors),
+      allowInteractiveAncestors: false
     },
     measurements: createMeasurementCache(),
     collectedElements: []
@@ -575,7 +597,7 @@ function extractTweetTextSegments(element, skipOptions) {
       return;
     }
 
-    if (node !== element && shouldSkipElement(node, skipOptions)) {
+    if (node !== element && shouldSkipElement(node, getTextExtractionSkipOptions(skipOptions))) {
       return;
     }
 
@@ -630,7 +652,7 @@ function isParagraphCandidate(element, measurements, skipOptions) {
     return false;
   }
 
-  return hasDirectReadableText(element, measurements, skipOptions);
+  return hasDirectReadableText(element, measurements, getTextExtractionSkipOptions(skipOptions));
 }
 
 function pushTranslationBlock(element, context) {
@@ -652,7 +674,7 @@ function pushTranslationBlock(element, context) {
     return false;
   }
 
-  const text = extractReadableText(element, context.measurements, context.skipOptions);
+  const text = extractReadableText(element, context.measurements, getTextExtractionSkipOptions(context.skipOptions));
   if (text.length < context.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text)) {
     return false;
   }
@@ -726,6 +748,10 @@ function shouldSkipElement(element, options = {}) {
     "#pit-floating"
   ];
 
+  if (!options.allowInteractiveAncestors) {
+    selectors.push(PIT_INTERACTIVE_ANCESTOR_SELECTOR);
+  }
+
   if (!options.allowTranslatedAncestors) {
     selectors.push("[data-pit-translated='true']");
   }
@@ -737,6 +763,13 @@ function shouldSkipElement(element, options = {}) {
   return Boolean(
     element.closest(selectors.join(","))
   );
+}
+
+function getTextExtractionSkipOptions(options = {}) {
+  return {
+    ...options,
+    allowInteractiveAncestors: true
+  };
 }
 
 function isHardSkipElement(element) {
@@ -2170,6 +2203,7 @@ function injectStyles() {
       white-space: pre-line;
       word-break: normal;
       overflow-wrap: anywhere;
+      pointer-events: none;
       transition: opacity 140ms ease;
       contain: layout style paint;
     }
@@ -2203,6 +2237,7 @@ function injectStyles() {
       background: rgba(255, 241, 241, 0.92);
       color: #b42318 !important;
       opacity: 1;
+      pointer-events: auto;
       text-decoration: none;
       white-space: normal;
       contain: layout style paint;
@@ -2236,6 +2271,7 @@ function injectStyles() {
       font: inherit;
       font-weight: 700;
       line-height: 1.35;
+      pointer-events: auto;
       cursor: pointer;
     }
 
