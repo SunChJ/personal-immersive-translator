@@ -30,6 +30,10 @@ const PIT_STATE = {
 const PIT_DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
 const PIT_DEFAULT_BILINGUAL_STYLE = "dashed";
 const PIT_BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
+const PIT_MAX_BATCH_ITEMS = 40;
+const PIT_DEFAULT_BATCH_CHAR_LIMIT = 9000;
+const PIT_MIN_BATCH_CHAR_LIMIT = 1800;
+const PIT_MAX_BATCH_CHAR_LIMIT = 18000;
 const PIT_TARGET_LANGUAGES = [
   "Chinese (Simplified)",
   "Chinese (Traditional)",
@@ -353,25 +357,30 @@ function splitImmediateTranslationBlocks(blocks, viewportFirst) {
 }
 
 async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translating") {
-  const batchSize = clamp(Number(options.batchSize || 24), 1, 40);
+  const maxBatchItems = clamp(Number(options.batchSize || PIT_MAX_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
+  const maxBatchChars = clamp(Number(options.batchCharLimit || PIT_DEFAULT_BATCH_CHAR_LIMIT), PIT_MIN_BATCH_CHAR_LIMIT, PIT_MAX_BATCH_CHAR_LIMIT);
   const mode = options.mode || "bilingual";
   let translated = 0;
 
   const bilingualStyle = normalizeBilingualStyle(options.bilingualStyle);
+  const batches = createAdaptiveTranslationBatches(orderedBlocks, {
+    maxItems: maxBatchItems,
+    maxChars: maxBatchChars
+  });
 
   prepareStableTranslationSurfaces(orderedBlocks, mode, bilingualStyle);
   await nextAnimationFrame();
 
   try {
-    for (let offset = 0; offset < orderedBlocks.length; offset += batchSize) {
+    for (const batch of batches) {
       if (PIT_STATE.cancelRequested) {
         removePendingTranslationSurfaces(orderedBlocks, mode);
         setFloatingStatus(`Stopped: ${translated}/${orderedBlocks.length}`);
         return translated;
       }
 
-      const batch = orderedBlocks.slice(offset, offset + batchSize);
-      setFloatingStatus(`${overlayPrefix} ${offset + 1}-${Math.min(offset + batch.length, orderedBlocks.length)} / ${orderedBlocks.length}`);
+      const batchChars = batch.reduce((sum, entry) => sum + estimateTranslationEntryChars(entry), 0);
+      setFloatingStatus(`${overlayPrefix} ${translated + 1}-${Math.min(translated + batch.length, orderedBlocks.length)} / ${orderedBlocks.length} (${formatCharCount(batchChars)})`);
 
       const response = await chrome.runtime.sendMessage({
         type: "translate-batch",
@@ -401,6 +410,44 @@ async function translateBlocks(orderedBlocks, options, overlayPrefix = "Translat
   }
 
   return translated;
+}
+
+function createAdaptiveTranslationBatches(entries, options) {
+  const batches = [];
+  let batch = [];
+  let batchChars = 0;
+
+  entries.forEach((entry) => {
+    const entryChars = estimateTranslationEntryChars(entry);
+    const wouldExceedItems = batch.length >= options.maxItems;
+    const wouldExceedChars = batch.length > 0 && batchChars + entryChars > options.maxChars;
+
+    if (wouldExceedItems || wouldExceedChars) {
+      batches.push(batch);
+      batch = [];
+      batchChars = 0;
+    }
+
+    batch.push(entry);
+    batchChars += entryChars;
+  });
+
+  if (batch.length > 0) {
+    batches.push(batch);
+  }
+
+  return batches;
+}
+
+function estimateTranslationEntryChars(entry) {
+  return String(entry.text || "").length + String(entry.id || "").length + 24;
+}
+
+function formatCharCount(value) {
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k chars`;
+  }
+  return `${value} chars`;
 }
 
 function collectTranslationBlocks(root, options) {
@@ -1502,7 +1549,7 @@ async function flushLazyTranslationQueue(options) {
     return;
   }
 
-  const batch = PIT_STATE.lazyQueue.splice(0, 24).filter((entry) => entry.element.parentNode && !hasExistingTranslation(entry.element));
+  const batch = PIT_STATE.lazyQueue.splice(0, PIT_MAX_BATCH_ITEMS).filter((entry) => entry.element.parentNode && !hasExistingTranslation(entry.element));
   batch.forEach((entry) => PIT_STATE.lazyQueuedIds.delete(entry.id));
   if (batch.length === 0) {
     return;
@@ -2707,7 +2754,8 @@ function readTranslationSettings() {
   }).then((settings) => ({
     ...settings,
     targetLanguage: normalizeTargetLanguage(settings.targetLanguage),
-    batchSize: 24,
+    batchSize: PIT_MAX_BATCH_ITEMS,
+    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   }));
 }

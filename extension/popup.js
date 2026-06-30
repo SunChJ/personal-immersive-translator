@@ -10,6 +10,8 @@ const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
 const DEFAULT_BILINGUAL_STYLE = "dashed";
 const PIT_TOKEN = "pit-local-extension-token-v1";
 const HEALTH_TIMEOUT_MS = 5000;
+const DEFAULT_BATCH_SIZE = 40;
+const DEFAULT_BATCH_CHAR_LIMIT = 9000;
 const BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
 const LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["中文", "Chinese (Simplified)"],
@@ -285,7 +287,8 @@ function readSettings() {
     viewportFirst: fields.viewportFirst.checked,
     showFloatingButton: fields.showFloatingButton.checked,
     translateSelection: fields.translateSelection.checked,
-    batchSize: 24,
+    batchSize: DEFAULT_BATCH_SIZE,
+    batchCharLimit: DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   };
 }

@@ -4,6 +4,8 @@ const PIT_TOKEN = "pit-local-extension-token-v1";
 const HEALTH_TIMEOUT_MS = 5000;
 const TRANSLATE_TIMEOUT_MS = 135000;
 const AUTO_TRANSLATE_DELAY_MS = 700;
+const DEFAULT_BATCH_SIZE = 40;
+const DEFAULT_BATCH_CHAR_LIMIT = 9000;
 const BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
 
 const autoTranslateTimers = new Map();
@@ -155,7 +157,8 @@ async function sendAutoTranslateMessage(tabId, url, settings) {
     viewportFirst: settings.viewportFirst !== false,
     showFloatingButton: settings.showFloatingButton !== false,
     translateSelection: settings.translateSelection !== false,
-    batchSize: 24,
+    batchSize: DEFAULT_BATCH_SIZE,
+    batchCharLimit: DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   };
 
