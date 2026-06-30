@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.8 - 2026-06-30
 
 - Kept the translation state active across SPA route changes: the floating control now stays on (showing an updating state) and re-translates the new route instead of resetting to untranslated.
 - Rebranded the extension to "Prism — Immersive Translator" with the triangle prism mark across the popup, floating control, and selection tooltip.

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Prism — Immersive Translator",
   "description": "Immersive bilingual page translation through a local Codex bridge.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Prism — Translate this page"
