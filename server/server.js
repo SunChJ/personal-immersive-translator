@@ -16,6 +16,7 @@ const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.3-codex-spark";
 const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 120000);
 const CODEX_PREWARM = process.env.CODEX_PREWARM !== "0";
+const CODEX_APP_THREAD_POOL_SIZE = Math.max(1, Number(process.env.CODEX_APP_THREAD_POOL_SIZE || 3));
 const SCHEMA_PATH = path.join(__dirname, "translation.schema.json");
 const PACKAGE_PATH = path.join(__dirname, "..", "package.json");
 const TRANSLATION_SCHEMA = JSON.parse(fs.readFileSync(SCHEMA_PATH, "utf8"));
@@ -25,6 +26,12 @@ const CACHE_LIMIT = Number(process.env.TRANSLATION_CACHE_LIMIT || 1200);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const translationCache = new Map();
 let codexAppClient = null;
+// "codex" (exec-per-call) has no persistent-daemon transport the way "codex-app" does —
+// codex exec is a one-shot CLI process by design. Prewarming still cuts the cold-start
+// cost that the *first* real request would otherwise pay, and lets health/latency
+// reporting mirror what codex-app already exposes.
+let codexExecWarm = false;
+let codexExecLastLatencyMs = null;
 
 const server = http.createServer(async (req, res) => {
   setCorsHeaders(req, res);
@@ -109,8 +116,22 @@ server.listen(PORT, "127.0.0.1", () => {
     codexAppClient.prewarm().catch((error) => {
       logError(`prewarm failed: ${error.message}`);
     });
+  } else if (TRANSLATOR_BACKEND === "codex" && CODEX_PREWARM) {
+    logInfo("prewarm start");
+    prewarmCodexExec().catch((error) => {
+      logError(`prewarm failed: ${error.message}`);
+    });
   }
 });
+
+async function prewarmCodexExec() {
+  await translateItemsWithCodex({
+    items: [{ id: "warmup", index: 0, tag: "p", path: "warmup", text: "warmup" }],
+    targetLanguage: DEFAULT_TARGET_LANGUAGE,
+    requestId: "warmup"
+  });
+  logInfo(`prewarm done: ${codexExecLastLatencyMs}ms`);
+}
 
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin;
@@ -152,8 +173,8 @@ function getHealthPayload() {
     model: TRANSLATOR_BACKEND.startsWith("codex") ? CODEX_MODEL : OPENAI_MODEL,
     hasApiKey: Boolean(OPENAI_API_KEY),
     cacheSize: translationCache.size,
-    warm: null,
-    lastLatencyMs: null
+    warm: TRANSLATOR_BACKEND === "codex" ? codexExecWarm : null,
+    lastLatencyMs: TRANSLATOR_BACKEND === "codex" ? codexExecLastLatencyMs : null
   };
 }
 
@@ -165,7 +186,7 @@ async function translateItems({ items, targetLanguage, requestId }) {
   items.forEach((item, index) => {
     const key = cacheKey(targetLanguage, item.text);
     if (translationCache.has(key)) {
-      result[index] = { id: item.id, text: translationCache.get(key) };
+      result[index] = { id: item.id, text: translationCache.get(key), ok: true };
       return;
     }
 
@@ -181,8 +202,14 @@ async function translateItems({ items, targetLanguage, requestId }) {
     translated.forEach((translation, index) => {
       const sourceItem = missing[index];
       const originalIndex = missingIndexes[index];
-      result[originalIndex] = { id: sourceItem.id, text: translation.text };
-      rememberTranslation(cacheKey(targetLanguage, sourceItem.text), translation.text);
+      const ok = translation.ok !== false;
+      result[originalIndex] = { id: sourceItem.id, text: translation.text, ok };
+      // Only cache real translations — caching a fallback-to-original result would
+      // make every future request (including a user-triggered retry) instantly
+      // "succeed" with the same untranslated text forever.
+      if (ok) {
+        rememberTranslation(cacheKey(targetLanguage, sourceItem.text), translation.text);
+      }
     });
   }
 
@@ -224,28 +251,49 @@ class CodexAppClient {
     this.lastLatencyMs = null;
     this.nextId = 1;
     this.pending = new Map();
-    this.queue = Promise.resolve();
+    // One shared thread meant every batch was processed strictly one at a time,
+    // even though the underlying JSON-RPC transport (this.pending / this.activeTurns,
+    // both keyed by id) already demultiplexes concurrent requests fine. A small pool
+    // of independent threads lets unrelated translation batches actually run in
+    // parallel; each thread still processes its own turns in order via thread.queue.
+    this.threads = [];
+    this.nextThreadIndex = 0;
     this.readyPromise = null;
     this.recentStderr = "";
-    this.threadId = null;
     this.warm = false;
     this.lastError = null;
   }
 
   async prewarm() {
-    await this.translate({
+    await this.ensureReady();
+    const startedAt = Date.now();
+    const warmupParams = {
       items: [{ id: "warmup", index: 0, tag: "p", path: "warmup", text: "warmup" }],
       targetLanguage: DEFAULT_TARGET_LANGUAGE,
       requestId: "warmup"
-    });
+    };
+    await Promise.all(this.threads.map((thread) => this.enqueueOnThread(thread, warmupParams)));
     this.warm = true;
-    logInfo(`prewarm done: ${this.lastLatencyMs}ms`);
+    this.lastLatencyMs = Date.now() - startedAt;
+    logInfo(`prewarm done: ${this.lastLatencyMs}ms (${this.threads.length} threads)`);
   }
 
-  translate({ items, targetLanguage, requestId }) {
-    const task = () => this.runTranslationTurn({ items, targetLanguage, requestId });
-    this.queue = this.queue.then(task, task);
-    return this.queue;
+  async translate({ items, targetLanguage, requestId }) {
+    await this.ensureReady();
+    const thread = this.pickThread();
+    return this.enqueueOnThread(thread, { items, targetLanguage, requestId });
+  }
+
+  pickThread() {
+    const thread = this.threads[this.nextThreadIndex % this.threads.length];
+    this.nextThreadIndex += 1;
+    return thread;
+  }
+
+  enqueueOnThread(thread, params) {
+    const task = () => this.runTranslationTurn(thread, params);
+    thread.queue = thread.queue.then(task, task);
+    return thread.queue;
   }
 
   async ensureReady() {
@@ -291,7 +339,7 @@ class CodexAppClient {
       logWarn(`codex app-server exited: code ${code}`);
       this.child = null;
       this.readyPromise = null;
-      this.threadId = null;
+      this.threads = [];
       this.warm = false;
     });
 
@@ -304,30 +352,33 @@ class CodexAppClient {
       }
     });
 
-    const response = await this.request("thread/start", {
-      model: CODEX_MODEL,
-      cwd: process.cwd(),
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      ephemeral: true,
-      baseInstructions:
-        "You are a deterministic webpage translation engine. Return final answers only as strict JSON matching the requested schema."
-    });
+    const threadResponses = await Promise.all(
+      Array.from({ length: CODEX_APP_THREAD_POOL_SIZE }, () => this.request("thread/start", {
+        model: CODEX_MODEL,
+        cwd: process.cwd(),
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        ephemeral: true,
+        baseInstructions:
+          "You are a deterministic webpage translation engine. Return final answers only as strict JSON matching the requested schema."
+      }))
+    );
 
-    this.threadId = response.result.thread.id;
+    this.threads = threadResponses.map((response) => ({
+      id: response.result.thread.id,
+      queue: Promise.resolve()
+    }));
     this.lastError = null;
-    logInfo(`codex app-server ready: thread ${this.threadId}`);
+    logInfo(`codex app-server ready: ${this.threads.length} threads (${this.threads.map((thread) => thread.id).join(", ")})`);
   }
 
   isReady() {
-    return Boolean(this.child && this.threadId);
+    return Boolean(this.child && this.threads.length > 0);
   }
 
-  async runTranslationTurn({ items, targetLanguage, requestId }) {
-    await this.ensureReady();
-
+  async runTranslationTurn(thread, { items, targetLanguage, requestId }) {
     const startedAt = Date.now();
-    logInfo(`[${requestId}] codex turn start: ${items.length} cache misses`);
+    logInfo(`[${requestId}] codex turn start: ${items.length} cache misses (thread ${thread.id})`);
     const prompt = [
       `Translate each item into ${targetLanguage}.`,
       "Preserve names, numbers, code-like tokens, links, and formatting intent.",
@@ -339,7 +390,7 @@ class CodexAppClient {
     ].join("\n");
 
     const response = await this.request("turn/start", {
-      threadId: this.threadId,
+      threadId: thread.id,
       input: [{ type: "text", text: prompt, text_elements: [] }],
       model: CODEX_MODEL,
       effort: "low",
@@ -533,7 +584,9 @@ async function translateItemsWithCodex({ items, targetLanguage, requestId }) {
     logInfo(`[${requestId}] codex exec start: ${items.length} cache misses`);
     const startedAt = Date.now();
     const { stdout, stderr } = await runProcess(CODEX_BIN, args, prompt, CODEX_TIMEOUT_MS);
-    logInfo(`[${requestId}] codex exec done: ${Date.now() - startedAt}ms`);
+    codexExecWarm = true;
+    codexExecLastLatencyMs = Date.now() - startedAt;
+    logInfo(`[${requestId}] codex exec done: ${codexExecLastLatencyMs}ms`);
     const outputText = await readOutputText(outputPath, stdout);
     const parsed = parseModelJson(outputText);
 
@@ -598,10 +651,13 @@ async function translateItemsWithOpenAI({ items, targetLanguage, requestId }) {
   return normalizeTranslations(parsed.translations, items, "Model", requestId);
 }
 
+// Every branch tags each result with `ok`: false means we had no real translation for
+// that item and fell back to the original text, so the caller can surface it as a
+// failure instead of silently rendering the source text as if it were translated.
 function normalizeTranslations(translations, items, source, requestId = "unknown") {
   if (translations.every((item) => item && typeof item === "object" && item.id)) {
     const byId = new Map(items.map((item) => [item.id, item]));
-    const result = items.map((item) => ({ id: item.id, text: item.text }));
+    const result = items.map((item) => ({ id: item.id, text: item.text, ok: false }));
     const seen = new Set();
 
     translations.forEach((translation) => {
@@ -612,7 +668,7 @@ function normalizeTranslations(translations, items, source, requestId = "unknown
       }
 
       seen.add(translation.id);
-      result[original.index] = { id: original.id, text: String(translation.text || original.text) };
+      result[original.index] = { id: original.id, text: String(translation.text || original.text), ok: true };
     });
 
     if (seen.size !== items.length) {
@@ -627,7 +683,8 @@ function normalizeTranslations(translations, items, source, requestId = "unknown
   if (translations.length === items.length) {
     return translations.map((translation, index) => ({
       id: items[index].id,
-      text: String(translation?.text || translation)
+      text: String(translation?.text || translation),
+      ok: true
     }));
   }
 
@@ -635,15 +692,20 @@ function normalizeTranslations(translations, items, source, requestId = "unknown
     logWarn(`[${requestId}] ${source} returned ${translations.length} translations for ${items.length} inputs; trimming extras`);
     return translations.slice(0, items.length).map((translation, index) => ({
       id: items[index].id,
-      text: String(translation?.text || translation)
+      text: String(translation?.text || translation),
+      ok: true
     }));
   }
 
   logWarn(`[${requestId}] ${source} returned ${translations.length} translations for ${items.length} inputs; filling missing items`);
-  return items.map((item, index) => ({
-    id: item.id,
-    text: String(translations[index]?.text || translations[index] || item.text)
-  }));
+  return items.map((item, index) => {
+    const translation = translations[index];
+    return {
+      id: item.id,
+      text: String(translation?.text || translation || item.text),
+      ok: Boolean(translation)
+    };
+  });
 }
 
 function createRequestId() {

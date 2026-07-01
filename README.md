@@ -110,6 +110,12 @@ Disable prewarm if needed:
 export CODEX_PREWARM=0
 ```
 
+The codex-app backend keeps a pool of independent threads on the same app-server process so multiple translation batches can run concurrently instead of queueing one at a time. Default is 3; tune it if needed:
+
+```bash
+export CODEX_APP_THREAD_POOL_SIZE=3
+```
+
 ## Useful Commands
 
 ```bash

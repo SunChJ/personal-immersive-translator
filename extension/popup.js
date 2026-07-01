@@ -6,25 +6,6 @@ const START_COMMAND = [
   "npm start"
 ].join("\n");
 
-const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
-const DEFAULT_BILINGUAL_STYLE = "dashed";
-const PIT_TOKEN = "pit-local-extension-token-v1";
-const HEALTH_TIMEOUT_MS = 5000;
-const DEFAULT_BATCH_SIZE = 40;
-const DEFAULT_BATCH_CHAR_LIMIT = 9000;
-const BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
-const LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
-  ["中文", "Chinese (Simplified)"],
-  ["简体中文", "Chinese (Simplified)"],
-  ["繁体中文", "Chinese (Traditional)"],
-  ["英文", "English"],
-  ["英语", "English"],
-  ["日文", "Japanese"],
-  ["日语", "Japanese"],
-  ["韩文", "Korean"],
-  ["韩语", "Korean"]
-]);
-
 const fields = {
   targetLanguage: document.getElementById("targetLanguage"),
   customTargetLanguage: document.getElementById("customTargetLanguage"),
@@ -71,10 +52,10 @@ init();
 
 async function init() {
   const saved = await chrome.storage.local.get({
-    targetLanguage: DEFAULT_TARGET_LANGUAGE,
-    endpoint: "http://127.0.0.1:8787",
+    targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
+    endpoint: PIT_DEFAULT_ENDPOINT,
     mode: "bilingual",
-    bilingualStyle: DEFAULT_BILINGUAL_STYLE,
+    bilingualStyle: PIT_DEFAULT_BILINGUAL_STYLE,
     clearPrevious: true,
     viewportFirst: true,
     showFloatingButton: true,
@@ -183,7 +164,7 @@ async function syncFloatingButton() {
 async function hydrateSiteAutoTranslate(autoTranslateSites) {
   try {
     const tab = await getActiveTab();
-    currentSiteHost = hostFromTabUrl(tab.url);
+    currentSiteHost = hostFromUrl(tab.url);
   } catch {
     currentSiteHost = "";
   }
@@ -218,7 +199,7 @@ async function checkHealth() {
       headers: {
         "X-PIT-Token": PIT_TOKEN
       }
-    }, HEALTH_TIMEOUT_MS);
+    }, PIT_HEALTH_TIMEOUT_MS);
     const body = await response.json();
     const ready = response.ok && body.ok !== false;
 
@@ -280,15 +261,15 @@ async function clearCurrentTab() {
 function readSettings() {
   return {
     targetLanguage: readTargetLanguage(),
-    endpoint: normalizeEndpoint(fields.endpoint.value.trim() || "http://127.0.0.1:8787"),
+    endpoint: normalizeEndpoint(fields.endpoint.value),
     mode: fields.mode.value,
     bilingualStyle: normalizeBilingualStyle(fields.bilingualStyle.value),
     clearPrevious: fields.clearPrevious.checked,
     viewportFirst: fields.viewportFirst.checked,
     showFloatingButton: fields.showFloatingButton.checked,
     translateSelection: fields.translateSelection.checked,
-    batchSize: DEFAULT_BATCH_SIZE,
-    batchCharLimit: DEFAULT_BATCH_CHAR_LIMIT,
+    batchSize: PIT_MAX_BATCH_ITEMS,
+    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   };
 }
@@ -314,19 +295,6 @@ function readTargetLanguage() {
   }
 
   return normalizeTargetLanguage(fields.targetLanguage.value);
-}
-
-function normalizeTargetLanguage(value) {
-  const language = String(value || "").trim();
-  if (!language) {
-    return DEFAULT_TARGET_LANGUAGE;
-  }
-
-  return LEGACY_TARGET_LANGUAGE_ALIASES.get(language) || language;
-}
-
-function normalizeBilingualStyle(value) {
-  return BILINGUAL_STYLES.has(value) ? value : DEFAULT_BILINGUAL_STYLE;
 }
 
 function syncBilingualStyleCards() {
@@ -375,9 +343,27 @@ async function sendToPage(tabId, message) {
       throw error;
     }
 
+    // Keep these file lists in sync with manifest.json's content_scripts entries.
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content.js"]
+      world: "MAIN",
+      files: ["route-patch.js"]
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [
+        "shared.js",
+        "content-utils.js",
+        "content-state.js",
+        "content-detect.js",
+        "content-render.js",
+        "content-observers.js",
+        "content-floating.js",
+        "content-selection.js",
+        "content-styles.js",
+        "content-translate.js",
+        "content.js"
+      ]
     });
     return await chrome.tabs.sendMessage(tabId, message);
   }
@@ -390,22 +376,9 @@ async function copyStartCommand() {
 
 function serverLabel(body) {
   if (body.warm === false) {
-    return `${prettyModel(body.model)} warming`;
+    return `${prettyModelLabel(body.model, "Codex bridge")} warming`;
   }
-  return prettyModel(body.model);
-}
-
-function prettyModel(model) {
-  const raw = String(model || "").trim();
-  if (!raw) {
-    return "Codex bridge";
-  }
-  const spark = raw.match(/(\d+(?:\.\d+)?)[-_ ]?codex[-_ ]?spark|codex[-_ ]?spark[-_ ]?(\d+(?:\.\d+)?)/i);
-  if (spark) {
-    const version = spark[1] || spark[2];
-    return version ? `Codex Spark ${version}` : "Codex Spark";
-  }
-  return raw;
+  return prettyModelLabel(body.model, "Codex bridge");
 }
 
 function updateTranslateSubtitle() {
@@ -435,35 +408,6 @@ function friendlyError(error) {
     return "The model returned a mismatched batch. Please try again.";
   }
   return text;
-}
-
-function normalizeEndpoint(endpoint) {
-  return endpoint.replace(/\/+$/, "");
-}
-
-function hostFromTabUrl(url) {
-  try {
-    const parsed = new URL(url || "");
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return "";
-    }
-    return parsed.hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-async function fetchWithTimeout(url, options, timeoutMs) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function setStatus(text, isError = false) {

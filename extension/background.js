@@ -1,12 +1,7 @@
-const DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
-const DEFAULT_BILINGUAL_STYLE = "dashed";
-const PIT_TOKEN = "pit-local-extension-token-v1";
-const HEALTH_TIMEOUT_MS = 5000;
+importScripts("shared.js");
+
 const TRANSLATE_TIMEOUT_MS = 135000;
 const AUTO_TRANSLATE_DELAY_MS = 700;
-const DEFAULT_BATCH_SIZE = 40;
-const DEFAULT_BATCH_CHAR_LIMIT = 9000;
-const BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
 
 const autoTranslateTimers = new Map();
 const autoTranslateUrls = new Map();
@@ -49,7 +44,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 async function translateBatch(message) {
-  const endpoint = normalizeEndpoint(message.endpoint || "http://127.0.0.1:8787");
+  const endpoint = normalizeEndpoint(message.endpoint);
   const response = await fetchWithTimeout(`${endpoint}/translate`, {
     method: "POST",
     headers: {
@@ -59,7 +54,7 @@ async function translateBatch(message) {
     body: JSON.stringify({
       items: message.items,
       texts: message.texts,
-      targetLanguage: message.targetLanguage || DEFAULT_TARGET_LANGUAGE,
+      targetLanguage: message.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
       sourceUrl: message.sourceUrl || ""
     })
   }, TRANSLATE_TIMEOUT_MS);
@@ -84,39 +79,17 @@ async function translateBatch(message) {
 }
 
 async function checkHealth(message) {
-  const endpoint = normalizeEndpoint(message.endpoint || "http://127.0.0.1:8787");
+  const endpoint = normalizeEndpoint(message.endpoint);
   const response = await fetchWithTimeout(`${endpoint}/health`, {
     headers: {
       "X-PIT-Token": PIT_TOKEN
     }
-  }, HEALTH_TIMEOUT_MS);
+  }, PIT_HEALTH_TIMEOUT_MS);
   const body = await response.json();
   if (!response.ok) {
     throw new Error(body.error || `Local proxy failed with HTTP ${response.status}`);
   }
   return { health: body };
-}
-
-async function fetchWithTimeout(url, options, timeoutMs) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Local proxy request timed out.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function normalizeEndpoint(endpoint) {
-  return endpoint.replace(/\/+$/, "");
 }
 
 async function scheduleAutoTranslate(tabId, url) {
@@ -150,15 +123,15 @@ async function scheduleAutoTranslate(tabId, url) {
 async function sendAutoTranslateMessage(tabId, url, settings) {
   const options = {
     targetLanguage: normalizeTargetLanguage(settings.targetLanguage),
-    endpoint: normalizeEndpoint(settings.endpoint || "http://127.0.0.1:8787"),
+    endpoint: normalizeEndpoint(settings.endpoint),
     mode: settings.mode || "bilingual",
     bilingualStyle: normalizeBilingualStyle(settings.bilingualStyle),
     clearPrevious: settings.clearPrevious !== false,
     viewportFirst: settings.viewportFirst !== false,
     showFloatingButton: settings.showFloatingButton !== false,
     translateSelection: settings.translateSelection !== false,
-    batchSize: DEFAULT_BATCH_SIZE,
-    batchCharLimit: DEFAULT_BATCH_CHAR_LIMIT,
+    batchSize: PIT_MAX_BATCH_ITEMS,
+    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   };
 
@@ -196,37 +169,16 @@ function clearAutoTranslateTimer(tabId) {
 
 function defaultTranslationSettings() {
   return {
-    targetLanguage: DEFAULT_TARGET_LANGUAGE,
-    endpoint: "http://127.0.0.1:8787",
+    targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
+    endpoint: PIT_DEFAULT_ENDPOINT,
     mode: "bilingual",
-    bilingualStyle: DEFAULT_BILINGUAL_STYLE,
+    bilingualStyle: PIT_DEFAULT_BILINGUAL_STYLE,
     clearPrevious: true,
     viewportFirst: true,
     showFloatingButton: true,
     translateSelection: true,
     autoTranslateSites: {}
   };
-}
-
-function normalizeTargetLanguage(value) {
-  const language = String(value || "").trim();
-  return language || DEFAULT_TARGET_LANGUAGE;
-}
-
-function normalizeBilingualStyle(value) {
-  return BILINGUAL_STYLES.has(value) ? value : DEFAULT_BILINGUAL_STYLE;
-}
-
-function hostFromUrl(url) {
-  try {
-    const parsed = new URL(url || "");
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return "";
-    }
-    return parsed.hostname.toLowerCase();
-  } catch {
-    return "";
-  }
 }
 
 function wait(ms) {
