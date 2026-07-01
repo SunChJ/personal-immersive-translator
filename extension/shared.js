@@ -21,6 +21,11 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
 ]);
 const PIT_MAX_BATCH_ITEMS = 40;
 const PIT_DEFAULT_BATCH_CHAR_LIMIT = 9000;
+// Per-request cap for scroll-triggered lazy loading (see drainLazyQueue in
+// content-observers.js), kept smaller than PIT_MAX_BATCH_ITEMS so each individual
+// round trip stays quick — drainLazyQueue runs several of these concurrently, but an
+// oversized single request would still make the batch it belongs to arrive late.
+const PIT_LAZY_BATCH_ITEMS = 16;
 const PIT_HEALTH_TIMEOUT_MS = 5000;
 
 function normalizeTargetLanguage(value) {

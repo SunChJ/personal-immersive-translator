@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.11 - 2026-07-01
+
+- Fixed scroll-triggered lazy loading not benefiting from the codex-app thread pool: each viewport-entry flush was mutex-guarded one at a time and could dequeue up to 40 items, so batches got slower without gaining any parallelism. Lazy flushes now use their own smaller per-request cap (`PIT_LAZY_BATCH_ITEMS`, 16) and drain the queue with up to `PIT_MAX_CONCURRENT_BATCHES` workers running concurrently, while still holding the same busy flag other flows already rely on.
+- Increased the lazy-load prefetch distance (`PIT_LAZY_ROOT_MARGIN`, 600px to 1500px) so blocks start translating further ahead of the viewport, hiding the backend's ~1-4s per-request latency behind normal scrolling instead of it showing up as a visible pop-in delay.
+
 ## 0.2.10 - 2026-07-01
 
 - Replaced the codex-app backend's single shared thread with a small pool of independent threads (default 3, `CODEX_APP_THREAD_POOL_SIZE`) so concurrent translation batches actually run in parallel server-side instead of queueing behind one thread; prewarm now warms every thread in the pool.

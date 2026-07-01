@@ -65,7 +65,11 @@ const PIT_TARGET_LANGUAGE_LABELS = {
   "Thai": "ไทย",
   "Indonesian": "Indonesia"
 };
-const PIT_LAZY_ROOT_MARGIN = 600;
+// Each lazy batch takes ~1-4s round trip through the local codex-app proxy (fixed
+// per-turn overhead that batching can't remove). Queuing blocks this far ahead of
+// the viewport gives that latency time to finish before the user actually scrolls
+// there, so translations are usually already in place instead of visibly popping in.
+const PIT_LAZY_ROOT_MARGIN = 1500;
 const PIT_DYNAMIC_SKIP_OPTIONS = {
   allowTranslatedAncestors: true,
   allowDeferredAncestors: true,

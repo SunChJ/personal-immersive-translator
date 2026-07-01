@@ -52,6 +52,14 @@ function queueLazyTranslation(entry, options) {
   }, 120);
 }
 
+// Holds PIT_STATE.running for the whole drain (not just one batch), so the
+// "is a translation in progress" contract every other flow (manual translate,
+// route-change retranslation, dynamic-mutation scan, the floating button) already
+// relies on is unchanged. What changes is that while it's held, up to
+// PIT_MAX_CONCURRENT_BATCHES batches now run at once against the queue instead of
+// one at a time, using the same worker-pool shape as translateBlocks() so the
+// codex-app thread pool (server/server.js CODEX_APP_THREAD_POOL_SIZE) actually gets
+// used during scroll-triggered loading, not just the initial full-page translation.
 async function flushLazyTranslationQueue(options) {
   if (PIT_STATE.running || PIT_STATE.lazyQueue.length === 0) {
     if (PIT_STATE.lazyQueue.length > 0) {
@@ -64,23 +72,12 @@ async function flushLazyTranslationQueue(options) {
     return;
   }
 
-  const dequeued = PIT_STATE.lazyQueue.splice(0, PIT_MAX_BATCH_ITEMS);
-  dequeued.forEach((entry) => PIT_STATE.lazyQueuedIds.delete(entry.id));
-  const batch = dequeued.filter((entry) => entry.element.parentNode && !hasExistingTranslation(entry.element));
-  if (batch.length === 0) {
-    return;
-  }
-
   PIT_STATE.running = true;
   PIT_STATE.cancelRequested = false;
   updateFloatingState("running");
 
   try {
-    const translated = await translateBlocks(prioritizeBlocks(batch, true), { ...options, clearPrevious: false }, "Loading nearby");
-    if (translated > 0) {
-      PIT_STATE.translated = true;
-      setFloatingStatus(`Added: ${translated}`);
-    }
+    await drainLazyQueue(options);
   } finally {
     PIT_STATE.running = false;
     updateFloatingState();
@@ -93,6 +90,45 @@ async function flushLazyTranslationQueue(options) {
       });
     }, 120);
   }
+}
+
+async function drainLazyQueue(options) {
+  // Errors are swallowed per-worker (translateBlocks already renders the failed/retry
+  // UI for the affected entries before it throws) so one bad batch can't reject
+  // Promise.all early and leave a sibling worker's DOM writes running after
+  // PIT_STATE.running has already been reset to false.
+  async function worker() {
+    for (;;) {
+      if (PIT_STATE.cancelRequested) {
+        return;
+      }
+
+      const dequeued = PIT_STATE.lazyQueue.splice(0, PIT_LAZY_BATCH_ITEMS);
+      if (dequeued.length === 0) {
+        return;
+      }
+
+      dequeued.forEach((entry) => PIT_STATE.lazyQueuedIds.delete(entry.id));
+      const batch = dequeued.filter((entry) => entry.element.parentNode && !hasExistingTranslation(entry.element));
+      if (batch.length === 0) {
+        continue;
+      }
+
+      try {
+        const translated = await translateBlocks(prioritizeBlocks(batch, true), { ...options, clearPrevious: false }, "Loading nearby");
+        if (translated > 0) {
+          PIT_STATE.translated = true;
+          setFloatingStatus(`Added: ${translated}`);
+        }
+      } catch (error) {
+        setFloatingStatus("Update failed");
+        return;
+      }
+    }
+  }
+
+  const workerCount = Math.min(PIT_MAX_CONCURRENT_BATCHES, Math.ceil(PIT_STATE.lazyQueue.length / PIT_LAZY_BATCH_ITEMS));
+  await Promise.all(Array.from({ length: workerCount }, worker));
 }
 
 function stopLazyTranslationObserver() {
