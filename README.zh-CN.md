@@ -109,6 +109,12 @@ export OPENAI_MODEL="gpt-5.4-mini"
 export CODEX_PREWARM=0
 ```
 
+codex-app 后端会在同一个 app-server 进程内维护一小池独立的 thread，让多个翻译批次可以真正并发处理，而不是排成一队。默认是 3，可按需调整：
+
+```bash
+export CODEX_APP_THREAD_POOL_SIZE=3
+```
+
 ## 常用命令
 
 ```bash
