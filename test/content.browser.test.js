@@ -61,6 +61,9 @@ test("replace mode preserves original nodes and clear restores them", async () =
 test("clearing while a response is delayed prevents stale injection", async () => {
   const result = await getBrowserSuiteResult("delayed-cancel");
   assert.equal(result.cancelled, true);
+  assert.equal(result.pendingText, "");
+  assert.equal(result.pendingAriaLabel, "Translation loading");
+  assert.equal(result.pendingSpinnerCount, 1);
   assert.equal(result.readySlots, 0);
   assert.equal(result.pendingSlots, 0);
   assert.equal(result.translatedFlag, "false");
@@ -532,12 +535,19 @@ function createHarnessHtml(routeSources, contentSources) {
 
         const pending = translatePage(TEST_OPTIONS);
         await waitFor(() => translationCalls().length === 1 && typeof release === "function");
+        const pendingSlot = document.querySelector(".pit-translation-pending");
+        const pendingText = pendingSlot?.textContent.trim() || "";
+        const pendingAriaLabel = pendingSlot?.getAttribute("aria-label") || "";
+        const pendingSpinnerCount = pendingSlot?.querySelectorAll(".pit-translation-spinner").length || 0;
         clearTranslations();
         release();
         const summary = await pending;
         const owner = document.getElementById("delayed-owner");
         return {
           cancelled: summary.cancelled === true,
+          pendingText,
+          pendingAriaLabel,
+          pendingSpinnerCount,
           pendingSlots: document.querySelectorAll(".pit-translation-pending").length,
           readySlots: document.querySelectorAll(".pit-translation-ready").length,
           translatedFlag: owner.dataset.pitTranslated || "false"

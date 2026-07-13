@@ -39,7 +39,6 @@ function renderPendingTranslationSlot(slot) {
   slot.setAttribute("aria-label", "Translation loading");
   slot.innerHTML = `
     <span class="pit-translation-spinner" aria-hidden="true"></span>
-    <span class="pit-translation-status-text">Translating...</span>
   `;
 }
 
@@ -398,4 +397,3 @@ function clearTranslations() {
   updateFloatingState();
   setFloatingStatus("Cleared");
 }
-

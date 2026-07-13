@@ -46,7 +46,6 @@ function injectStyles() {
     .pit-translation-pending {
       display: flex;
       align-items: center;
-      gap: 0.48em;
       opacity: 0.54;
       text-decoration: none;
     }
