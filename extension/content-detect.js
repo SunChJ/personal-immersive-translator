@@ -486,6 +486,14 @@ function hasExistingTranslation(value) {
   return siblingMatches || childMatches;
 }
 
+function hasCompletedTranslation(entry) {
+  const slot = findTranslationSlot(entry);
+  if (slot && !slot.classList.contains("pit-translation-pending")) {
+    return true;
+  }
+  return entry.kind !== "tweet-segment" && entry.element.dataset?.pitTranslated === "true";
+}
+
 function shouldPreferChildBlocks(element) {
   if (element.matches("[data-testid='tweetText'], .titleline, .commtext")) {
     return false;

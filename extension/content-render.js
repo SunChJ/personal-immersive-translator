@@ -117,7 +117,12 @@ async function retryTranslationEntry(entry, options) {
   renderPendingTranslationSlot(entry.translationSlot);
 
   try {
-    const translated = await translateBlocks([entry], { ...options, clearPrevious: false }, "Retrying", translationEpoch);
+    const pending = enqueuePendingTranslations([entry], { ...options, clearPrevious: false }, {
+      force: true,
+      priority: 4,
+      translationEpoch
+    });
+    const translated = pending.cached + await flushPendingTranslationQueue(translationEpoch, "Retrying");
     if (translationEpoch === PIT_STATE.translationEpoch && !PIT_STATE.cancelRequested && translated > 0) {
       PIT_STATE.translated = true;
       setFloatingStatus("Retried");
@@ -379,6 +384,7 @@ function restoreAllReplaceTranslations() {
 function clearTranslations() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  clearPendingTranslationQueue();
   stopDynamicTranslationObserver();
   stopLazyTranslationObserver();
   restoreAllReplaceTranslations();

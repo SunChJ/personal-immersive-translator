@@ -44,88 +44,24 @@ function startLazyTranslationObserver(entries, options) {
 }
 
 function queueLazyTranslation(entry, options) {
-  if (PIT_STATE.lazyQueuedIds.has(entry.id) || hasExistingTranslation(entry)) {
+  if (hasExistingTranslation(entry)) {
     return;
   }
 
   delete entry.element.dataset.pitDeferred;
-  PIT_STATE.lazyQueuedIds.add(entry.id);
-  PIT_STATE.lazyQueue.push(entry);
-  window.clearTimeout(PIT_STATE.lazyTimer);
-  PIT_STATE.lazyTimer = window.setTimeout(() => {
-    flushLazyTranslationQueue(options).catch((error) => {
-      setFloatingStatus("Update failed");
-    });
-  }, 120);
-}
-
-// Drain at most one 40-entry slice here. translateBlocks owns the only bounded
-// worker pool, avoiding nested 3x3 concurrency while the remaining queue is
-// scheduled promptly for the next slice.
-async function flushLazyTranslationQueue(options) {
-  if (PIT_STATE.running || PIT_STATE.lazyQueue.length === 0) {
-    if (PIT_STATE.lazyQueue.length > 0) {
-      PIT_STATE.lazyTimer = window.setTimeout(() => {
-        flushLazyTranslationQueue(options).catch((error) => {
-          setFloatingStatus("Update failed");
-        });
-      }, 500);
-    }
-    return;
-  }
-
-  const dequeued = PIT_STATE.lazyQueue.splice(0, PIT_MAX_BATCH_ITEMS);
-  dequeued.forEach((entry) => PIT_STATE.lazyQueuedIds.delete(entry.id));
-  const batch = dequeued.filter((entry) => entry.element.parentNode && !hasExistingTranslation(entry));
-  if (batch.length === 0) {
-    scheduleLazyQueueFlush(options);
-    return;
-  }
-
-  PIT_STATE.running = true;
-  PIT_STATE.cancelRequested = false;
-  const translationEpoch = ++PIT_STATE.translationEpoch;
-  updateFloatingState("running");
-
-  try {
-    const translated = await translateBlocks(prioritizeBlocks(batch, true), { ...options, clearPrevious: false }, "Loading nearby", translationEpoch);
-    if (translationEpoch === PIT_STATE.translationEpoch && !PIT_STATE.cancelRequested && translated > 0) {
-      PIT_STATE.translated = true;
-      setFloatingStatus(`Added: ${translated}`);
-    }
-  } finally {
-    PIT_STATE.running = false;
-    updateFloatingState();
-    scheduleLazyQueueFlush(options);
-  }
-}
-
-function scheduleLazyQueueFlush(options) {
-  if (PIT_STATE.lazyQueue.length === 0) {
-    return;
-  }
-
-  window.clearTimeout(PIT_STATE.lazyTimer);
-  PIT_STATE.lazyTimer = window.setTimeout(() => {
-    flushLazyTranslationQueue(options).catch(() => {
-      setFloatingStatus("Update failed");
-    });
-  }, 120);
+  enqueuePendingTranslations([entry], options, {
+    priority: 3,
+    translationEpoch: PIT_STATE.translationEpoch
+  });
+  schedulePendingTranslationDrain();
 }
 
 function stopLazyTranslationObserver() {
   PIT_STATE.lazyObserver?.disconnect();
   PIT_STATE.lazyObserver = null;
-  PIT_STATE.lazyQueue.forEach((entry) => {
-    delete entry.element.dataset.pitDeferred;
-  });
   document.querySelectorAll("[data-pit-deferred='true']").forEach((node) => {
     delete node.dataset.pitDeferred;
   });
-  PIT_STATE.lazyQueue = [];
-  PIT_STATE.lazyQueuedIds.clear();
-  window.clearTimeout(PIT_STATE.lazyTimer);
-  PIT_STATE.lazyTimer = null;
 }
 
 function startDynamicTranslationObserver(options) {
@@ -182,12 +118,6 @@ function scheduleDynamicTranslation(options, delayMs) {
   const boundedDelay = Math.min(delayMs, Math.max(0, PIT_DYNAMIC_MAX_WAIT - elapsed));
   window.clearTimeout(PIT_STATE.dynamicTimer);
   PIT_STATE.dynamicTimer = window.setTimeout(() => {
-    if (PIT_STATE.running) {
-      PIT_STATE.dynamicQueuedAt = Date.now();
-      scheduleDynamicTranslation(options, 500);
-      return;
-    }
-
     PIT_STATE.dynamicQueuedAt = 0;
     const scanRoots = PIT_STATE.dynamicRoots;
     PIT_STATE.dynamicRoots = [];
@@ -397,6 +327,7 @@ function isAutoTranslationActive() {
 function resetTranslationArtifactsForAutoUpdate() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  clearPendingTranslationQueue();
   PIT_STATE.dynamicQueue.clear();
   PIT_STATE.dynamicRoots = [];
   stopLazyTranslationObserver();
@@ -484,12 +415,6 @@ function mergeScanRoots(roots) {
 }
 
 async function translateDiscoveredBlocks(options, roots = [document.body]) {
-  if (PIT_STATE.running) {
-    PIT_STATE.dynamicRoots = mergeScanRoots(PIT_STATE.dynamicRoots.concat(roots));
-    scheduleDynamicTranslation(options, 250);
-    return;
-  }
-
   const seenIds = new Set();
   const discovered = [];
   mergeScanRoots(roots).forEach((root) => {
@@ -507,38 +432,19 @@ async function translateDiscoveredBlocks(options, roots = [document.body]) {
       discovered.push(entry);
     });
   });
-  prioritizeBlocks(discovered, true).forEach((entry) => {
-    PIT_STATE.dynamicQueue.set(entry.id, entry);
+  const pending = enqueuePendingTranslations(prioritizeBlocks(discovered, true), options, {
+    priority: 1,
+    translationEpoch: PIT_STATE.translationEpoch
   });
-
-  const candidates = Array.from(PIT_STATE.dynamicQueue.values()).slice(0, PIT_MAX_BATCH_ITEMS);
-  candidates.forEach((entry) => PIT_STATE.dynamicQueue.delete(entry.id));
-  const batch = candidates.filter((entry) => entry.element.isConnected && !hasExistingTranslation(entry));
-  if (batch.length === 0) {
-    scheduleDynamicBacklog(options);
-    return;
+  if (pending.cached > 0) {
+    PIT_STATE.translated = true;
+    setFloatingStatus(`Added: ${pending.cached}`);
   }
-
-  PIT_STATE.running = true;
-  PIT_STATE.cancelRequested = false;
-  const translationEpoch = ++PIT_STATE.translationEpoch;
-  updateFloatingState("running");
-
-  try {
-    const translated = await translateBlocks(batch, { ...options, clearPrevious: false }, "Updating", translationEpoch);
-    if (translationEpoch === PIT_STATE.translationEpoch && !PIT_STATE.cancelRequested && translated > 0) {
-      PIT_STATE.translated = true;
-      setFloatingStatus(`Added: ${translated}`);
-    }
-  } finally {
-    PIT_STATE.running = false;
-    updateFloatingState();
-    scheduleDynamicBacklog(options);
-  }
+  schedulePendingTranslationDrain();
 }
 
 function scheduleDynamicBacklog(options) {
-  if (PIT_STATE.dynamicQueue.size > 0 || PIT_STATE.dynamicRoots.length > 0) {
+  if (PIT_STATE.dynamicRoots.length > 0) {
     scheduleDynamicTranslation(options, 120);
   }
 }

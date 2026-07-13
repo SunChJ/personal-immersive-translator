@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.15 - 2026-07-12
+
+- Added one deduplicated pending queue for initial scans, viewport lazy loading, dynamic updates, and retries. Visible deferred content now shows its spinner immediately and is prioritized after the active batch completes.
+- Added a bounded per-page translation result cache so later matching blocks render locally without another backend request, while preserving every DOM owner for duplicate text.
+
 ## 0.2.14 - 2026-07-12
 
 - Prevented duplicate auto-translation after a page refresh by keeping exactly one scheduled or running auto-translation job per tab navigation and invalidating stale retries.

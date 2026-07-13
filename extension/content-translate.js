@@ -49,7 +49,14 @@ async function translatePage(options) {
     }
 
     const { immediate, deferred } = splitImmediateTranslationBlocks(orderedBlocks, options.viewportFirst !== false);
-    const translated = await translateBlocks(immediate, options, "Translating", translationEpoch);
+    if (deferred.length > 0) {
+      startLazyTranslationObserver(deferred, options);
+    }
+    const pending = enqueuePendingTranslations(immediate, options, {
+      priority: 2,
+      translationEpoch
+    });
+    const translated = pending.cached + await flushPendingTranslationQueue(translationEpoch, "Translating");
 
     if (location.href !== PIT_STATE.dynamicRouteUrl) {
       handlePossibleRouteChange(options);
@@ -59,10 +66,6 @@ async function translatePage(options) {
         stopRouteTranslationWatcher();
       }
       return { translated: 0, total: orderedBlocks.length, deferred: 0, cancelled: true };
-    }
-
-    if (deferred.length > 0) {
-      startLazyTranslationObserver(deferred, options);
     }
 
     PIT_STATE.translated = translated > 0;
@@ -92,6 +95,7 @@ async function translatePage(options) {
     throw error;
   } finally {
     PIT_STATE.running = false;
+    schedulePendingTranslationDrain();
   }
 }
 
@@ -226,6 +230,7 @@ async function translateBlocks(
       throw new Error(response?.error || "Translation request failed.");
     }
 
+    rememberCachedTranslations(batch, response.translations, options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE);
     translatedItems += applyTranslations(batch, response.translations, mode, bilingualStyle);
     processedItems += batch.length;
     return true;
@@ -275,4 +280,208 @@ async function translateBlocks(
   }
 
   return translatedItems;
+}
+
+function enqueuePendingTranslations(entries, options, { force = false, priority = 0, translationEpoch = PIT_STATE.translationEpoch } = {}) {
+  const mode = options.mode || "bilingual";
+  const bilingualStyle = normalizeBilingualStyle(options.bilingualStyle);
+  const targetLanguage = options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE;
+  let cached = 0;
+
+  entries.forEach((entry) => {
+    if (!entry.element.isConnected || PIT_STATE.pendingIds.has(entry.id) || (!force && hasExistingTranslation(entry))) {
+      return;
+    }
+
+    const cachedTranslation = getCachedTranslation(entry, targetLanguage);
+    if (cachedTranslation) {
+      cached += applyTranslations([entry], [{ id: entry.id, text: cachedTranslation }], mode, bilingualStyle);
+      return;
+    }
+
+    prepareStableTranslationSurfaces([entry], mode, bilingualStyle);
+    PIT_STATE.pendingIds.add(entry.id);
+    PIT_STATE.pendingQueue.set(entry.id, {
+      entry,
+      options,
+      priority,
+      translationEpoch
+    });
+  });
+
+  return { cached };
+}
+
+async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.translationEpoch, overlayPrefix = "Translating") {
+  if (PIT_STATE.pendingDraining) {
+    return 0;
+  }
+
+  const { cached, jobs } = takePendingTranslationJobs(translationEpoch);
+  if (jobs.length === 0) {
+    return cached;
+  }
+
+  PIT_STATE.pendingDraining = true;
+  try {
+    const translated = await translateBlocks(
+      jobs.map((job) => job.entry),
+      jobs[0].options,
+      overlayPrefix,
+      translationEpoch
+    );
+    return cached + translated;
+  } finally {
+    jobs.forEach((job) => PIT_STATE.pendingIds.delete(job.entry.id));
+    PIT_STATE.pendingDraining = false;
+  }
+}
+
+function takePendingTranslationJobs(translationEpoch) {
+  let cached = 0;
+  const candidates = Array.from(PIT_STATE.pendingQueue.values())
+    .sort((left, right) => right.priority - left.priority || pendingEntryDistance(left.entry) - pendingEntryDistance(right.entry));
+  const jobs = [];
+  let configKey = "";
+
+  candidates.forEach((job) => {
+    if (job.translationEpoch !== translationEpoch) {
+      removePendingTranslationJob(job);
+      return;
+    }
+
+    if (!job.entry.element.isConnected || hasCompletedTranslation(job.entry)) {
+      removePendingTranslationJob(job);
+      return;
+    }
+
+    const targetLanguage = job.options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE;
+    const cachedTranslation = getCachedTranslation(job.entry, targetLanguage);
+    if (cachedTranslation) {
+      cached += applyTranslations(
+        [job.entry],
+        [{ id: job.entry.id, text: cachedTranslation }],
+        job.options.mode || "bilingual",
+        normalizeBilingualStyle(job.options.bilingualStyle)
+      );
+      removePendingTranslationJob(job);
+      return;
+    }
+
+    const jobConfigKey = pendingTranslationConfigKey(job.options);
+    if (!configKey) {
+      configKey = jobConfigKey;
+    }
+    if (jobConfigKey !== configKey || jobs.length >= PIT_PENDING_DRAIN_LIMIT) {
+      return;
+    }
+
+    PIT_STATE.pendingQueue.delete(job.entry.id);
+    jobs.push(job);
+  });
+
+  return { cached, jobs };
+}
+
+function removePendingTranslationJob(job) {
+  if (PIT_STATE.pendingQueue.get(job.entry.id) === job) {
+    PIT_STATE.pendingQueue.delete(job.entry.id);
+  }
+  PIT_STATE.pendingIds.delete(job.entry.id);
+  if (job.entry.translationSlot?.classList.contains("pit-translation-pending")) {
+    job.entry.translationSlot.remove();
+    job.entry.translationSlot = null;
+  }
+}
+
+function schedulePendingTranslationDrain() {
+  if (PIT_STATE.running || PIT_STATE.pendingDraining || PIT_STATE.pendingQueue.size === 0) {
+    return;
+  }
+
+  window.clearTimeout(PIT_STATE.pendingTimer);
+  PIT_STATE.pendingTimer = window.setTimeout(async () => {
+    PIT_STATE.pendingTimer = null;
+    if (PIT_STATE.running || PIT_STATE.pendingDraining) {
+      return;
+    }
+
+    PIT_STATE.running = true;
+    PIT_STATE.cancelRequested = false;
+    updateFloatingState("running");
+    try {
+      const translated = await flushPendingTranslationQueue(PIT_STATE.translationEpoch, "Updating");
+      if (translated > 0 && !PIT_STATE.cancelRequested) {
+        PIT_STATE.translated = true;
+      }
+    } catch (error) {
+      setFloatingStatus("Update failed");
+    } finally {
+      PIT_STATE.running = false;
+      updateFloatingState();
+      schedulePendingTranslationDrain();
+    }
+  }, 0);
+}
+
+function clearPendingTranslationQueue() {
+  window.clearTimeout(PIT_STATE.pendingTimer);
+  PIT_STATE.pendingTimer = null;
+  PIT_STATE.pendingQueue.forEach((job) => {
+    if (job.entry.translationSlot?.classList.contains("pit-translation-pending")) {
+      job.entry.translationSlot.remove();
+      job.entry.translationSlot = null;
+    }
+  });
+  PIT_STATE.pendingQueue.clear();
+  PIT_STATE.pendingIds.clear();
+}
+
+function pendingEntryDistance(entry) {
+  const rect = getEntryRect(entry);
+  if (isInViewport(rect)) {
+    return 0;
+  }
+  return Math.min(Math.abs(rect.top), Math.abs(rect.bottom - window.innerHeight));
+}
+
+function pendingTranslationConfigKey(options) {
+  return [
+    options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
+    options.endpoint || PIT_DEFAULT_ENDPOINT,
+    options.mode || "bilingual",
+    normalizeBilingualStyle(options.bilingualStyle)
+  ].join("\u0000");
+}
+
+function translationCacheKey(entry, targetLanguage) {
+  return `${targetLanguage}\u0000${entry.text}`;
+}
+
+function getCachedTranslation(entry, targetLanguage) {
+  const key = translationCacheKey(entry, targetLanguage);
+  const translation = PIT_STATE.translationCache.get(key);
+  if (!translation) {
+    return "";
+  }
+  PIT_STATE.translationCache.delete(key);
+  PIT_STATE.translationCache.set(key, translation);
+  return translation;
+}
+
+function rememberCachedTranslations(batch, translations, targetLanguage) {
+  const byId = normalizeTranslationMap(batch, translations);
+  batch.forEach((entry) => {
+    const translation = String(byId.get(entry.id) || "").trim();
+    if (!translation) {
+      return;
+    }
+    const key = translationCacheKey(entry, targetLanguage);
+    if (PIT_STATE.translationCache.has(key)) {
+      PIT_STATE.translationCache.delete(key);
+    } else if (PIT_STATE.translationCache.size >= PIT_TRANSLATION_CACHE_LIMIT) {
+      PIT_STATE.translationCache.delete(PIT_STATE.translationCache.keys().next().value);
+    }
+    PIT_STATE.translationCache.set(key, translation);
+  });
 }
