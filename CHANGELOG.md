@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.13 - 2026-07-12
+
+- Simplified pending page-translation placeholders to show only the spinner, while retaining an accessible loading label.
+
 ## 0.2.12 - 2026-07-09
 
 - Merged the `prism-ui-redesign` modular content runtime, shared helpers, event-driven SPA route patch, adaptive batching, and ahead-of-viewport lazy prefetch.
