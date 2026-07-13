@@ -20,7 +20,7 @@ function prepareStableTranslationSurfaces(entries, mode, bilingualStyle = PIT_DE
       return;
     }
 
-    const slot = document.createElement("div");
+    const slot = document.createElement("span");
     slot.className = "pit-translation pit-translation-pending";
     slot.dataset.pitSkip = "true";
     slot.dataset.pitPlacement = translationSlotPlacement(entry);
@@ -113,12 +113,13 @@ async function retryTranslationEntry(entry, options) {
 
   PIT_STATE.running = true;
   PIT_STATE.cancelRequested = false;
+  const translationEpoch = ++PIT_STATE.translationEpoch;
   updateFloatingState("running");
   renderPendingTranslationSlot(entry.translationSlot);
 
   try {
-    const translated = await translateBlocks([entry], { ...options, clearPrevious: false }, "Retrying");
-    if (translated > 0) {
+    const translated = await translateBlocks([entry], { ...options, clearPrevious: false }, "Retrying", translationEpoch);
+    if (translationEpoch === PIT_STATE.translationEpoch && !PIT_STATE.cancelRequested && translated > 0) {
       PIT_STATE.translated = true;
       setFloatingStatus("Retried");
     }
@@ -129,18 +130,14 @@ async function retryTranslationEntry(entry, options) {
 }
 
 function findTranslationSlot(entry) {
-  if (entry.kind === "tweet-segment") {
-    return entry.element.querySelector(`:scope > .pit-translation[data-pit-slot-id="${entry.id}"]`);
-  }
-
   const element = entry.element;
-  const child = element.querySelector?.(":scope > .pit-translation");
-  if (child) {
-    return child;
+  const selector = `:scope > .pit-translation[data-pit-slot-id="${entry.id}"]`;
+  if (translationSlotPlacement(entry) === "inside") {
+    return element.querySelector?.(selector) || null;
   }
 
   const sibling = element.nextElementSibling;
-  if (sibling?.classList?.contains("pit-translation")) {
+  if (sibling?.classList?.contains("pit-translation") && sibling.dataset.pitSlotId === entry.id) {
     return sibling;
   }
 
@@ -149,6 +146,7 @@ function findTranslationSlot(entry) {
 
 function insertTranslationSlot(entry, slot) {
   slot.dataset.pitSlotId = entry.id;
+  slot.pitOwnerElement = entry.element;
 
   if (entry.kind === "tweet-segment" && entry.insertAfter?.parentNode === entry.element) {
     entry.element.insertBefore(slot, entry.insertAfter.nextSibling);
@@ -171,16 +169,12 @@ function insertTranslationSlot(entry, slot) {
 }
 
 function translationSlotPlacement(entry) {
-  if (entry.kind === "tweet-segment") {
+  if (entry.kind === "tweet-segment" || entry.kind === "walked") {
     return "inside";
   }
 
   const tagName = entry.element.tagName.toLowerCase();
   if (["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "figcaption", "caption", "dt", "dd", "summary", "td", "th"].includes(tagName)) {
-    return "inside";
-  }
-
-  if (entry.kind === "walked" && !entry.element.matches("main, article, section, body")) {
     return "inside";
   }
 
@@ -248,23 +242,13 @@ function readableLineHeight(style) {
   return Number.isFinite(fontSize) ? fontSize * 1.35 : 20;
 }
 
-function applyTranslations(batch, translations, mode, bilingualStyle = PIT_DEFAULT_BILINGUAL_STYLE, options = {}) {
+function applyTranslations(batch, translations, mode, bilingualStyle = PIT_DEFAULT_BILINGUAL_STYLE) {
   const translationsById = normalizeTranslationMap(batch, translations);
   const normalizedStyle = normalizeBilingualStyle(bilingualStyle);
+  let applied = 0;
 
   batch.forEach((entry) => {
-    const result = translationsById.get(entry.id);
-    const translation = String(result?.text || "").trim();
-
-    if (result && result.ok === false && entry.element.parentNode) {
-      if (mode === "replace") {
-        unlockElementHeight(entry.element);
-        return;
-      }
-      renderFailedTranslationSlot(entry, options, "The model did not return a translation for this block.");
-      return;
-    }
-
+    const translation = String(translationsById.get(entry.id) || "").trim();
     if (!translation || !entry.element.parentNode) {
       if (!translation && entry.translationSlot?.classList.contains("pit-translation-pending")) {
         entry.translationSlot.remove();
@@ -276,14 +260,13 @@ function applyTranslations(batch, translations, mode, bilingualStyle = PIT_DEFAU
     }
 
     if (mode === "replace") {
-      entry.element.dataset.pitTranslated = "true";
-      markOwnReplaceMutation(entry.element);
-      entry.element.textContent = translation;
-      unlockElementHeightSoon(entry.element);
+      applyReplaceTranslation(entry, translation);
+      applied += 1;
       return;
     }
 
-    const translationBlock = entry.translationSlot || document.createElement("div");
+    const translationBlock = entry.translationSlot || document.createElement("span");
+    const needsStyle = !entry.translationSlot;
     translationBlock.className = "pit-translation pit-translation-ready";
     translationBlock.dataset.pitSkip = "true";
     translationBlock.dataset.pitPlacement = translationSlotPlacement(entry);
@@ -292,18 +275,114 @@ function applyTranslations(batch, translations, mode, bilingualStyle = PIT_DEFAU
     translationBlock.removeAttribute("aria-label");
     translationBlock.removeAttribute("role");
     translationBlock.removeAttribute("title");
-    applyInheritedTextStyle(entry.element, translationBlock, getEntryStyle(entry));
+    translationBlock.style.minHeight = "";
+    if (needsStyle) {
+      applyInheritedTextStyle(entry.element, translationBlock, getEntryStyle(entry));
+    }
     entry.element.dataset.pitTranslated = "true";
 
     if (!translationBlock.parentNode) {
       insertTranslationSlot(entry, translationBlock);
     }
+    entry.translationSlot = translationBlock;
+    applied += 1;
+  });
+
+  return applied;
+}
+
+function applyReplaceTranslation(entry, translation) {
+  const element = entry.element;
+  let state = PIT_STATE.replaceStates.get(element);
+  markOwnReplaceMutation(element);
+
+  if (!state) {
+    state = {
+      hiddenElements: [],
+      slot: null,
+      textWrappers: []
+    };
+
+    Array.from(element.childNodes).forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const wrapper = document.createElement("span");
+        wrapper.className = "pit-replace-original";
+        wrapper.dataset.pitSkip = "true";
+        element.insertBefore(wrapper, node);
+        wrapper.appendChild(node);
+        state.textWrappers.push(wrapper);
+        return;
+      }
+
+      if (node instanceof Element && !node.classList.contains("pit-translation")) {
+        const hadClass = node.classList.contains("pit-replace-original");
+        node.classList.add("pit-replace-original");
+        state.hiddenElements.push({ hadClass, node });
+      }
+    });
+
+    state.slot = document.createElement("span");
+    state.slot.className = "pit-translation pit-translation-ready pit-translation-replace";
+    state.slot.dataset.pitPlacement = "inside";
+    state.slot.dataset.pitSkip = "true";
+    state.slot.dataset.pitSlotId = entry.id;
+    state.slot.dataset.pitStyle = "replace";
+    state.slot.pitOwnerElement = element;
+    applyInheritedTextStyle(element, state.slot, getEntryStyle(entry));
+    element.appendChild(state.slot);
+    PIT_STATE.replaceStates.set(element, state);
+  }
+
+  state.slot.textContent = translation;
+  element.dataset.pitTranslated = "true";
+  unlockElementHeightSoon(element);
+}
+
+function restoreReplaceTranslation(element) {
+  const state = PIT_STATE.replaceStates.get(element);
+  if (!state) {
+    return false;
+  }
+
+  markOwnReplaceMutation(element);
+  if (state.slot) {
+    state.slot.pitIntentionalRemoval = true;
+    state.slot.remove();
+  }
+  state.hiddenElements.forEach(({ hadClass, node }) => {
+    if (!hadClass) {
+      node.classList.remove("pit-replace-original");
+    }
+  });
+  state.textWrappers.forEach((wrapper) => {
+    const parent = wrapper.parentNode;
+    if (!parent) {
+      return;
+    }
+    while (wrapper.firstChild) {
+      parent.insertBefore(wrapper.firstChild, wrapper);
+    }
+    wrapper.remove();
+  });
+
+  PIT_STATE.replaceStates.delete(element);
+  element.dataset.pitTranslated = "false";
+  unlockElementHeight(element);
+  return true;
+}
+
+function restoreAllReplaceTranslations() {
+  Array.from(PIT_STATE.replaceStates.keys()).forEach((element) => {
+    restoreReplaceTranslation(element);
   });
 }
 
 function clearTranslations() {
+  PIT_STATE.translationEpoch += 1;
+  PIT_STATE.cancelRequested = true;
   stopDynamicTranslationObserver();
   stopLazyTranslationObserver();
+  restoreAllReplaceTranslations();
   document.querySelectorAll(".pit-translation").forEach((node) => node.remove());
   document.querySelectorAll("[data-pit-translated='true']").forEach((node) => {
     node.dataset.pitTranslated = "false";

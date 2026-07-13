@@ -16,6 +16,9 @@ Personal Immersive Translator 是一个个人版页面翻译插件。Chrome 插�
 - 优先翻译当前可见区域，提升体感速度。
 - 按段落/标题/list item 等块级结构翻译，而不是打碎文本节点。
 - 通过稳定的 `pitId` 将译文匹配回原 DOM 块，降低错位风险。
+- 首批优先返回、后续按字符预算批处理，兼顾首屏速度和长页面吞吐。
+- 相同全文只请求一次，并把译文准确回填到每个 DOM 位置。
+- 替换模式不会销毁原始链接和行内节点，清除后可完整恢复。
 - 本地翻译缓存，重复文本几乎瞬时返回。
 - 默认使用已登录的 Codex CLI，也支持 OpenAI API 后端。
 
@@ -53,7 +56,7 @@ Start Translator.command
 或者手动运行：
 
 ```bash
-cd /Users/samsoncj/develop/personal-immersive-translator
+cd /path/to/personal-immersive-translator
 npm run doctor
 npm run start:codex
 ```
@@ -103,16 +106,16 @@ export OPENAI_API_KEY="sk-..."
 export OPENAI_MODEL="gpt-5.4-mini"
 ```
 
-如需关闭预热：
+默认预热会初始化 Codex app-server 并验证一个临时 thread，但不会额外发起模型 turn。如需关闭：
 
 ```bash
 export CODEX_PREWARM=0
 ```
 
-codex-app 后端会在同一个 app-server 进程内维护一小池独立的 thread，让多个翻译批次可以真正并发处理，而不是排成一队。默认是 3，可按需调整：
+codex-app 后端默认最多并发执行 3 个 FIFO 翻译 turn。每个 turn 都使用新的临时 thread，并在结束后删除，不会在不同网页之间共享对话历史。可按需调整上限：
 
 ```bash
-export CODEX_APP_THREAD_POOL_SIZE=3
+export CODEX_APP_MAX_CONCURRENCY=3
 ```
 
 ## 常用命令
@@ -120,9 +123,64 @@ export CODEX_APP_THREAD_POOL_SIZE=3
 ```bash
 npm run check:version
 npm run doctor
+npm run verify
+npm run observe
 npm run start:codex
 npm run start:api
 ```
+
+## 验证与性能观测
+
+完整验证不会调用真实模型，而是使用确定性的本地假后端：
+
+```bash
+npm run verify
+```
+
+它依次执行版本检查、纯逻辑单元测试、真实 Chrome DOM 注入测试、server 集成测试，以及并发压力 smoke test。也可以分开运行：
+
+```bash
+npm run test:unit
+npm run test:batch
+npm run test:server
+npm run test:stress
+```
+
+保存优化前后两份相同配置的结果，即可进行回归判定：
+
+```bash
+npm run perf -- --requests 200 --concurrency 24 --items 40 \
+  --unique-ratio 0.25 --delay-ms 50 \
+  --output artifacts/perf/baseline.json
+
+# 修改代码后，用相同参数生成 current.json
+npm run perf -- --requests 200 --concurrency 24 --items 40 \
+  --unique-ratio 0.25 --delay-ms 50 \
+  --output artifacts/perf/current.json
+
+npm run perf:compare -- \
+  artifacts/perf/baseline.json artifacts/perf/current.json
+```
+
+报告包含 p50/p95/p99、吞吐、错误率、后端调用量、去重/缓存/并发合并节省量；默认在 p95 或吞吐回归超过 10%、后端 items 增加、错误率增加时返回非零退出码。`artifacts/perf/` 已忽略，不会污染 Git。
+
+本机装有 `hyperfine` 时，可以重复测量包括进程启动在内的完整墙钟时间：
+
+```bash
+npm run perf:hyperfine
+```
+
+结果同时保存到 `artifacts/perf/hyperfine.json`。
+
+运行真实 translator 时，可读取匿名实时指标或持续观察：
+
+```bash
+npm run observe
+npm run observe -- --watch 2
+npm run observe -- --reset
+```
+
+单次观测结果为 `FAIL` 时命令返回非零退出码。`GET /metrics` 仅包含请求数、成功率、items、cache/coalesced/backend miss、最近最多 2048 次请求的 P50/P95/P99 和运行时 gauge，不保存原文、译文或 DOM ID。重置指标使用 token 鉴权，且不会清除翻译缓存。
 
 ## 版本管理
 

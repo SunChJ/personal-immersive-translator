@@ -5,13 +5,13 @@ function normalizeTranslationMap(batch, translations) {
   if (Array.isArray(translations)) {
     translations.forEach((item, index) => {
       if (item && typeof item === "object" && item.id) {
-        map.set(item.id, { text: item.text || "", ok: item.ok !== false });
+        map.set(item.id, item.text || "");
         return;
       }
 
       const entry = batch[index];
       if (entry) {
-        map.set(entry.id, { text: item?.text || item || "", ok: true });
+        map.set(entry.id, item?.text || item || "");
       }
     });
   }

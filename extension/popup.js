@@ -343,28 +343,13 @@ async function sendToPage(tabId, message) {
       throw error;
     }
 
-    // Keep these file lists in sync with manifest.json's content_scripts entries.
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      files: ["route-patch.js"]
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: [
-        "shared.js",
-        "content-utils.js",
-        "content-state.js",
-        "content-detect.js",
-        "content-render.js",
-        "content-observers.js",
-        "content-floating.js",
-        "content-selection.js",
-        "content-styles.js",
-        "content-translate.js",
-        "content.js"
-      ]
-    });
+    const contentScripts = chrome.runtime.getManifest().content_scripts || [];
+    const mainFiles = contentScripts.find((entry) => entry.world === "MAIN")?.js || [];
+    const isolatedFiles = contentScripts.find((entry) => entry.world !== "MAIN")?.js || [];
+    if (mainFiles.length > 0) {
+      await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: mainFiles });
+    }
+    await chrome.scripting.executeScript({ target: { tabId }, files: isolatedFiles });
     return await chrome.tabs.sendMessage(tabId, message);
   }
 }

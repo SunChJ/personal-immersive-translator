@@ -2,12 +2,10 @@
 function collectTranslationBlocks(root, options) {
   const seen = new Set();
   const blocks = [];
-  const textFingerprints = new Set();
   const minChars = Number(options.minChars || 4);
   const context = {
     seen,
     blocks,
-    textFingerprints,
     minChars,
     skipOptions: {
       allowTranslatedAncestors: Boolean(options.allowTranslatedAncestors),
@@ -86,6 +84,20 @@ function getCachedStyle(element, measurements) {
   return style;
 }
 
+function readElementStyle(element, computedStyle) {
+  const style = computedStyle || window.getComputedStyle(element);
+  return {
+    color: style.color,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontStyle: style.fontStyle,
+    fontWeight: style.fontWeight,
+    letterSpacing: style.letterSpacing,
+    lineHeight: style.lineHeight,
+    textAlign: style.textAlign
+  };
+}
+
 function getCachedRect(element, measurements) {
   if (!measurements) {
     return element.getBoundingClientRect();
@@ -108,7 +120,7 @@ function getEntryRect(entry) {
 
 function getEntryStyle(entry) {
   if (!entry.style) {
-    entry.style = window.getComputedStyle(entry.element);
+    entry.style = readElementStyle(entry.element);
   }
   return entry.style;
 }
@@ -160,19 +172,13 @@ function collectTweetTextSegments(root, context) {
     let accepted = 0;
 
     segments.forEach((segment) => {
-      const fingerprint = createTextFingerprint(segment.text);
-      if (context.textFingerprints.has(fingerprint)) {
-        return;
-      }
-
-      context.textFingerprints.add(fingerprint);
       context.blocks.push({
         element,
         id: `${baseId}-seg-${String(segment.index + 1).padStart(3, "0")}`,
         insertAfter: segment.anchor,
         kind: "tweet-segment",
         rect: getCachedRect(element, context.measurements),
-        style: getCachedStyle(element, context.measurements),
+        style: readElementStyle(element, getCachedStyle(element, context.measurements)),
         text: segment.text
       });
       accepted += 1;
@@ -319,13 +325,7 @@ function pushTranslationBlock(element, context) {
     return false;
   }
 
-  const fingerprint = createTextFingerprint(text);
-  if (context.textFingerprints.has(fingerprint)) {
-    return false;
-  }
-
   context.seen.add(element);
-  context.textFingerprints.add(fingerprint);
   element.dataset.pitCollected = "true";
   context.collectedElements.push(element);
   element.dataset.pitBlockKind = context.kind;
@@ -335,7 +335,7 @@ function pushTranslationBlock(element, context) {
     text,
     kind: context.kind,
     rect: getCachedRect(element, context.measurements),
-    style: getCachedStyle(element, context.measurements)
+    style: readElementStyle(element, getCachedStyle(element, context.measurements))
   });
   return true;
 }
@@ -459,13 +459,31 @@ function isNearViewport(rect, margin) {
   return rect.bottom >= -margin && rect.top <= window.innerHeight + margin && rect.right >= -margin && rect.left <= window.innerWidth + margin;
 }
 
-function hasExistingTranslation(node) {
+function hasExistingTranslation(value) {
+  const entry = value?.element instanceof HTMLElement ? value : null;
+  const node = entry ? entry.element : value;
+
+  if (entry) {
+    if (findTranslationSlot(entry)) {
+      return true;
+    }
+    return entry.kind !== "tweet-segment" && node.dataset?.pitTranslated === "true";
+  }
+
   if (node.dataset?.pitTranslated === "true") {
     return true;
   }
 
   const sibling = node.nextElementSibling;
-  return Boolean(sibling?.classList?.contains("pit-translation") || node.querySelector?.(":scope > .pit-translation"));
+  const sourceId = node.dataset?.pitId || "";
+  const siblingMatches = Boolean(
+    sibling?.classList?.contains("pit-translation") &&
+    (!sourceId || sibling.dataset.pitSlotId === sourceId)
+  );
+  const childMatches = Array.from(node.querySelectorAll?.(":scope > .pit-translation") || []).some((slot) => {
+    return !sourceId || slot.dataset.pitSlotId === sourceId || slot.dataset.pitSlotId?.startsWith(`${sourceId}-seg-`);
+  });
+  return siblingMatches || childMatches;
 }
 
 function shouldPreferChildBlocks(element) {
@@ -728,8 +746,3 @@ function isBoilerplateText(text) {
     "open menu"
   ].includes(normalized);
 }
-
-function createTextFingerprint(text) {
-  return normalizeText(text).toLowerCase().slice(0, 240);
-}
-

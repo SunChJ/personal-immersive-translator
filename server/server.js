@@ -12,11 +12,17 @@ const TRANSLATOR_BACKEND = (process.env.TRANSLATOR_BACKEND || "codex-app").toLow
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_TIMEOUT_MS = readTimeout("OPENAI_TIMEOUT_MS", 120000);
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.3-codex-spark";
-const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 120000);
+const CODEX_TIMEOUT_MS = readTimeout("CODEX_TIMEOUT_MS", 120000);
+const CODEX_APP_MAX_CONCURRENCY = readBoundedInteger(
+  "CODEX_APP_MAX_CONCURRENCY",
+  readBoundedInteger("CODEX_APP_THREAD_POOL_SIZE", 3, 1, 8),
+  1,
+  8
+);
 const CODEX_PREWARM = process.env.CODEX_PREWARM !== "0";
-const CODEX_APP_THREAD_POOL_SIZE = Math.max(1, Number(process.env.CODEX_APP_THREAD_POOL_SIZE || 3));
 const SCHEMA_PATH = path.join(__dirname, "translation.schema.json");
 const PACKAGE_PATH = path.join(__dirname, "..", "package.json");
 const TRANSLATION_SCHEMA = JSON.parse(fs.readFileSync(SCHEMA_PATH, "utf8"));
@@ -24,17 +30,36 @@ const PACKAGE_VERSION = JSON.parse(fs.readFileSync(PACKAGE_PATH, "utf8")).versio
 const TRANSLATOR_TOKEN = process.env.TRANSLATOR_TOKEN || "pit-local-extension-token-v1";
 const CACHE_LIMIT = Number(process.env.TRANSLATION_CACHE_LIMIT || 1200);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+const METRICS_LATENCY_SAMPLE_LIMIT = 2048;
+const SERVER_STARTED_AT = Date.now();
 const translationCache = new Map();
+const inFlightTranslations = new Map();
+let metricsState = createMetricsState();
 let codexAppClient = null;
-// "codex" (exec-per-call) has no persistent-daemon transport the way "codex-app" does —
-// codex exec is a one-shot CLI process by design. Prewarming still cuts the cold-start
-// cost that the *first* real request would otherwise pay, and lets health/latency
-// reporting mirror what codex-app already exposes.
-let codexExecWarm = false;
-let codexExecLastLatencyMs = null;
+
+function readTimeout(name, fallback) {
+  const value = Number(process.env[name] || fallback);
+  return Number.isInteger(value) && value > 0 && value <= 2147483647 ? value : fallback;
+}
+
+function readBoundedInteger(name, fallback, min, max) {
+  const value = Number(process.env[name] || fallback);
+  return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
 
 const server = http.createServer(async (req, res) => {
   setCorsHeaders(req, res);
+
+  let requestMetrics = null;
+  let translationStartedAt = null;
+  let translationRecorded = false;
+  const finishTranslation = (succeeded) => {
+    if (!requestMetrics || translationRecorded) {
+      return;
+    }
+    translationRecorded = true;
+    recordTranslationResult(requestMetrics, succeeded, translationStartedAt);
+  };
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -56,13 +81,35 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/metrics") {
+      writeJson(res, 200, getMetricsPayload());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/metrics/reset") {
+      if (!isAuthorized(req)) {
+        writeJson(res, 403, { error: "Unauthorized metrics reset request." });
+        return;
+      }
+
+      metricsState = createMetricsState();
+      codexAppClient?.resetRuntimeMetrics();
+      writeJson(res, 200, getMetricsPayload());
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/translate") {
       if (!isAuthorized(req)) {
         writeJson(res, 403, { error: "Unauthorized local translation request." });
         return;
       }
 
+      requestMetrics = metricsState;
+      requestMetrics.requests.total += 1;
+      translationStartedAt = process.hrtime.bigint();
+
       if (!TRANSLATOR_BACKEND.startsWith("codex") && !OPENAI_API_KEY) {
+        finishTranslation(false);
         writeJson(res, 500, {
           error: "OPENAI_API_KEY is not set in the local proxy environment."
         });
@@ -76,14 +123,16 @@ const server = http.createServer(async (req, res) => {
       const startedAt = Date.now();
       logInfo(`[${requestId}] translate start: ${items.length} items -> ${targetLanguage}`);
 
-      const translations = await translateItems({ items, targetLanguage, requestId });
+      const translations = await translateItems({ items, targetLanguage, requestId, metrics: requestMetrics });
       logInfo(`[${requestId}] translate done: ${translations.length} items in ${Date.now() - startedAt}ms`);
+      finishTranslation(true);
       writeJson(res, 200, { translations });
       return;
     }
 
     writeJson(res, 404, { error: "Not found." });
   } catch (error) {
+    finishTranslation(false);
     logError(`request failed: ${error instanceof Error ? error.message : String(error)}`);
     writeJson(res, 500, {
       error: error instanceof Error ? error.message : String(error)
@@ -116,22 +165,8 @@ server.listen(PORT, "127.0.0.1", () => {
     codexAppClient.prewarm().catch((error) => {
       logError(`prewarm failed: ${error.message}`);
     });
-  } else if (TRANSLATOR_BACKEND === "codex" && CODEX_PREWARM) {
-    logInfo("prewarm start");
-    prewarmCodexExec().catch((error) => {
-      logError(`prewarm failed: ${error.message}`);
-    });
   }
 });
-
-async function prewarmCodexExec() {
-  await translateItemsWithCodex({
-    items: [{ id: "warmup", index: 0, tag: "p", path: "warmup", text: "warmup" }],
-    targetLanguage: DEFAULT_TARGET_LANGUAGE,
-    requestId: "warmup"
-  });
-  logInfo(`prewarm done: ${codexExecLastLatencyMs}ms`);
-}
 
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin;
@@ -162,6 +197,7 @@ function getHealthPayload() {
       cacheSize: translationCache.size,
       warm: codexAppClient ? codexAppClient.warm : null,
       lastLatencyMs: codexAppClient ? codexAppClient.lastLatencyMs : null,
+      concurrency: codexAppClient ? codexAppClient.getConcurrencySnapshot() : null,
       error
     };
   }
@@ -173,45 +209,183 @@ function getHealthPayload() {
     model: TRANSLATOR_BACKEND.startsWith("codex") ? CODEX_MODEL : OPENAI_MODEL,
     hasApiKey: Boolean(OPENAI_API_KEY),
     cacheSize: translationCache.size,
-    warm: TRANSLATOR_BACKEND === "codex" ? codexExecWarm : null,
-    lastLatencyMs: TRANSLATOR_BACKEND === "codex" ? codexExecLastLatencyMs : null
+    warm: null,
+    lastLatencyMs: null
   };
 }
 
-async function translateItems({ items, targetLanguage, requestId }) {
-  const result = new Array(items.length);
-  const missing = [];
-  const missingIndexes = [];
+function createMetricsState() {
+  return {
+    requests: { total: 0, succeeded: 0, failed: 0 },
+    items: { input: 0, unique: 0 },
+    sources: { cacheHits: 0, coalescedHits: 0, backendMisses: 0 },
+    backendCalls: 0,
+    latency: {
+      count: 0,
+      totalMs: 0,
+      minMs: Infinity,
+      maxMs: 0,
+      samples: [],
+      nextSample: 0
+    }
+  };
+}
 
-  items.forEach((item, index) => {
+function recordTranslationResult(metrics, succeeded, startedAt) {
+  if (succeeded) {
+    metrics.requests.succeeded += 1;
+  } else {
+    metrics.requests.failed += 1;
+  }
+
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+  const latency = metrics.latency;
+  latency.count += 1;
+  latency.totalMs += elapsedMs;
+  latency.minMs = Math.min(latency.minMs, elapsedMs);
+  latency.maxMs = Math.max(latency.maxMs, elapsedMs);
+
+  if (latency.samples.length < METRICS_LATENCY_SAMPLE_LIMIT) {
+    latency.samples.push(elapsedMs);
+  } else {
+    latency.samples[latency.nextSample] = elapsedMs;
+    latency.nextSample = (latency.nextSample + 1) % METRICS_LATENCY_SAMPLE_LIMIT;
+  }
+}
+
+function getMetricsPayload() {
+  const metrics = metricsState;
+  const latency = metrics.latency;
+  const samples = [...latency.samples].sort((left, right) => left - right);
+  const count = latency.count;
+
+  return {
+    uptimeMs: Date.now() - SERVER_STARTED_AT,
+    requests: { ...metrics.requests },
+    items: { ...metrics.items },
+    sources: { ...metrics.sources },
+    backendCalls: metrics.backendCalls,
+    latencyMs: {
+      count,
+      total: roundMetric(latency.totalMs),
+      average: count ? roundMetric(latency.totalMs / count) : null,
+      min: count ? roundMetric(latency.minMs) : null,
+      p50: percentile(samples, 0.5),
+      p95: percentile(samples, 0.95),
+      p99: percentile(samples, 0.99),
+      max: count ? roundMetric(latency.maxMs) : null,
+      samples: samples.length,
+      percentileWindow: "latest",
+      percentileWindowSize: samples.length,
+      percentileWindowCapacity: METRICS_LATENCY_SAMPLE_LIMIT
+    },
+    inFlightSize: inFlightTranslations.size,
+    cacheSize: translationCache.size,
+    codex: codexAppClient ? codexAppClient.getConcurrencySnapshot() : null
+  };
+}
+
+function percentile(sortedValues, percentileValue) {
+  if (sortedValues.length === 0) {
+    return null;
+  }
+  const index = Math.max(0, Math.ceil(sortedValues.length * percentileValue) - 1);
+  return roundMetric(sortedValues[index]);
+}
+
+function roundMetric(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+async function translateItems({ items, targetLanguage, requestId, metrics }) {
+  const result = new Array(items.length);
+  const groupsByKey = new Map();
+
+  items.forEach((item, resultIndex) => {
     const key = cacheKey(targetLanguage, item.text);
-    if (translationCache.has(key)) {
-      result[index] = { id: item.id, text: translationCache.get(key), ok: true };
+    let group = groupsByKey.get(key);
+    if (!group) {
+      group = {
+        key,
+        item,
+        targets: []
+      };
+      groupsByKey.set(key, group);
+    }
+    group.targets.push({ id: item.id, resultIndex });
+  });
+
+  const groups = Array.from(groupsByKey.values());
+  const backendGroups = [];
+  let cacheHits = 0;
+  let coalescedHits = 0;
+
+  metrics.items.input += items.length;
+  metrics.items.unique += groups.length;
+
+  groups.forEach((group) => {
+    if (translationCache.has(group.key)) {
+      cacheHits += 1;
+      group.translationPromise = Promise.resolve(translationCache.get(group.key));
       return;
     }
 
-    missing.push({ ...item, index: missing.length });
-    missingIndexes.push(index);
+    const inFlight = inFlightTranslations.get(group.key);
+    if (inFlight) {
+      coalescedHits += 1;
+      group.translationPromise = inFlight;
+      return;
+    }
+
+    backendGroups.push(group);
   });
 
-  const cacheHits = items.length - missing.length;
-  logInfo(`[${requestId}] cache: ${cacheHits} hit, ${missing.length} miss`);
+  logInfo(
+    `[${requestId}] translation sources: ${cacheHits} cache, ${coalescedHits} coalesced, ` +
+    `${backendGroups.length} backend miss; ${items.length} items / ${groups.length} unique`
+  );
 
-  if (missing.length > 0) {
-    const translated = await translateItemsViaBackend({ items: missing, targetLanguage, requestId });
-    translated.forEach((translation, index) => {
-      const sourceItem = missing[index];
-      const originalIndex = missingIndexes[index];
-      const ok = translation.ok !== false;
-      result[originalIndex] = { id: sourceItem.id, text: translation.text, ok };
-      // Only cache real translations — caching a fallback-to-original result would
-      // make every future request (including a user-triggered retry) instantly
-      // "succeed" with the same untranslated text forever.
-      if (ok) {
-        rememberTranslation(cacheKey(targetLanguage, sourceItem.text), translation.text);
-      }
+  metrics.sources.cacheHits += cacheHits;
+  metrics.sources.coalescedHits += coalescedHits;
+  metrics.sources.backendMisses += backendGroups.length;
+
+  if (backendGroups.length > 0) {
+    const backendItems = backendGroups.map((group, index) => ({
+      ...group.item,
+      id: `${requestId}-backend-${index}`,
+      index
+    }));
+    metrics.backendCalls += 1;
+    const backendPromise = translateItemsViaBackend({ items: backendItems, targetLanguage, requestId });
+
+    backendGroups.forEach((group, index) => {
+      const translationPromise = backendPromise
+        .then((translations) => {
+          const text = translations[index]?.text;
+          if (typeof text !== "string" || !text.trim()) {
+            throw new Error(`Translation backend omitted item ${index}.`);
+          }
+          rememberTranslation(group.key, text);
+          return text;
+        })
+        .finally(() => {
+          if (inFlightTranslations.get(group.key) === translationPromise) {
+            inFlightTranslations.delete(group.key);
+          }
+        });
+
+      inFlightTranslations.set(group.key, translationPromise);
+      group.translationPromise = translationPromise;
     });
   }
+
+  const translatedTexts = await Promise.all(groups.map((group) => group.translationPromise));
+  groups.forEach((group, groupIndex) => {
+    const text = translatedTexts[groupIndex];
+    group.targets.forEach(({ id, resultIndex }) => {
+      result[resultIndex] = { id, text };
+    });
+  });
 
   return result;
 }
@@ -248,52 +422,76 @@ class CodexAppClient {
     this.activeTurns = new Map();
     this.buffer = "";
     this.child = null;
+    this.initialized = false;
     this.lastLatencyMs = null;
     this.nextId = 1;
     this.pending = new Map();
-    // One shared thread meant every batch was processed strictly one at a time,
-    // even though the underlying JSON-RPC transport (this.pending / this.activeTurns,
-    // both keyed by id) already demultiplexes concurrent requests fine. A small pool
-    // of independent threads lets unrelated translation batches actually run in
-    // parallel; each thread still processes its own turns in order via thread.queue.
-    this.threads = [];
-    this.nextThreadIndex = 0;
     this.readyPromise = null;
     this.recentStderr = "";
     this.warm = false;
     this.lastError = null;
+    this.turnsActive = 0;
+    this.turnWaiters = [];
+    this.threadCleanupPending = 0;
+    this.threadCleanupFailures = 0;
   }
 
   async prewarm() {
-    await this.ensureReady();
     const startedAt = Date.now();
-    const warmupParams = {
-      items: [{ id: "warmup", index: 0, tag: "p", path: "warmup", text: "warmup" }],
-      targetLanguage: DEFAULT_TARGET_LANGUAGE,
-      requestId: "warmup"
-    };
-    await Promise.all(this.threads.map((thread) => this.enqueueOnThread(thread, warmupParams)));
-    this.warm = true;
-    this.lastLatencyMs = Date.now() - startedAt;
-    logInfo(`prewarm done: ${this.lastLatencyMs}ms (${this.threads.length} threads)`);
+    await this.ensureReady();
+    const threadId = await this.createThread();
+    await this.bestEffortRequest("thread/delete", { threadId }, "prewarm");
+    logInfo(`prewarm done: app-server thread ready in ${Date.now() - startedAt}ms`);
   }
 
   async translate({ items, targetLanguage, requestId }) {
-    await this.ensureReady();
-    const thread = this.pickThread();
-    return this.enqueueOnThread(thread, { items, targetLanguage, requestId });
+    const release = await this.acquireTurnSlot();
+    try {
+      return await this.runTranslationTurn({ items, targetLanguage, requestId });
+    } finally {
+      release();
+    }
   }
 
-  pickThread() {
-    const thread = this.threads[this.nextThreadIndex % this.threads.length];
-    this.nextThreadIndex += 1;
-    return thread;
+  acquireTurnSlot() {
+    if (this.turnsActive < CODEX_APP_MAX_CONCURRENCY) {
+      this.turnsActive += 1;
+      return Promise.resolve(this.createTurnRelease());
+    }
+
+    return new Promise((resolve) => {
+      this.turnWaiters.push(() => resolve(this.createTurnRelease()));
+    });
   }
 
-  enqueueOnThread(thread, params) {
-    const task = () => this.runTranslationTurn(thread, params);
-    thread.queue = thread.queue.then(task, task);
-    return thread.queue;
+  createTurnRelease() {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const next = this.turnWaiters.shift();
+      if (next) {
+        next();
+      } else {
+        this.turnsActive = Math.max(0, this.turnsActive - 1);
+      }
+    };
+  }
+
+  getConcurrencySnapshot() {
+    return {
+      active: this.turnsActive,
+      queued: this.turnWaiters.length,
+      max: CODEX_APP_MAX_CONCURRENCY,
+      cleanupPending: this.threadCleanupPending,
+      cleanupFailures: this.threadCleanupFailures
+    };
+  }
+
+  resetRuntimeMetrics() {
+    this.threadCleanupFailures = 0;
   }
 
   async ensureReady() {
@@ -338,8 +536,8 @@ class CodexAppClient {
       this.failAll(new Error(`Codex app-server exited with code ${code}. ${this.recentStderr}`));
       logWarn(`codex app-server exited: code ${code}`);
       this.child = null;
+      this.initialized = false;
       this.readyPromise = null;
-      this.threads = [];
       this.warm = false;
     });
 
@@ -352,66 +550,114 @@ class CodexAppClient {
       }
     });
 
-    const threadResponses = await Promise.all(
-      Array.from({ length: CODEX_APP_THREAD_POOL_SIZE }, () => this.request("thread/start", {
+    this.initialized = true;
+    this.warm = false;
+    this.lastError = null;
+    logInfo("codex app-server ready");
+  }
+
+  isReady() {
+    return Boolean(this.child && this.initialized);
+  }
+
+  async runTranslationTurn({ items, targetLanguage, requestId }) {
+    await this.ensureReady();
+
+    const startedAt = Date.now();
+    let threadId = null;
+    let turnId = null;
+    let turnPromise = null;
+    let turnCompleted = false;
+
+    try {
+      threadId = await this.createThread();
+      logInfo(`[${requestId}] codex turn start: ${items.length} backend misses on thread ${threadId}`);
+      const prompt = [
+        `Translate each item into ${targetLanguage}.`,
+        "Preserve names, numbers, code-like tokens, links, and formatting intent.",
+        "Preserve paragraph breaks and newline structure from each input text.",
+        "Return only JSON matching the schema.",
+        "Each translation object must keep the exact same id and index as the input item.",
+        "Do not add, remove, split, merge, or reorder items.",
+        JSON.stringify({ targetLanguage, items })
+      ].join("\n");
+
+      await this.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text: prompt, text_elements: [] }],
+        model: CODEX_MODEL,
+        effort: "low",
+        summary: "none",
+        outputSchema: TRANSLATION_SCHEMA
+      }, 30000, (response) => {
+        turnId = response.result.turn.id;
+        turnPromise = this.waitForTurn(turnId, CODEX_TIMEOUT_MS);
+      });
+
+      if (!turnPromise) {
+        throw new Error("Codex app-server turn/start did not return a turn id.");
+      }
+      const outputText = await turnPromise;
+      turnCompleted = true;
+      this.lastLatencyMs = Date.now() - startedAt;
+      logInfo(`[${requestId}] codex turn done: ${this.lastLatencyMs}ms`);
+      const parsed = parseModelJson(outputText);
+
+      if (!Array.isArray(parsed.translations)) {
+        throw new Error("Codex app-server output did not include translations array.");
+      }
+
+      return normalizeTranslations(parsed.translations, items, "Codex app-server", requestId);
+    } finally {
+      if (threadId && turnId && !turnCompleted) {
+        await this.bestEffortRequest("turn/interrupt", { threadId, turnId }, requestId);
+      }
+      if (threadId) {
+        await this.bestEffortRequest("thread/delete", { threadId }, requestId);
+      }
+    }
+  }
+
+  async createThread() {
+    try {
+      const response = await this.request("thread/start", {
         model: CODEX_MODEL,
         cwd: process.cwd(),
         approvalPolicy: "never",
         sandbox: "read-only",
-        ephemeral: true,
+        ephemeral: false,
         baseInstructions:
           "You are a deterministic webpage translation engine. Return final answers only as strict JSON matching the requested schema."
-      }))
-    );
-
-    this.threads = threadResponses.map((response) => ({
-      id: response.result.thread.id,
-      queue: Promise.resolve()
-    }));
-    this.lastError = null;
-    logInfo(`codex app-server ready: ${this.threads.length} threads (${this.threads.map((thread) => thread.id).join(", ")})`);
-  }
-
-  isReady() {
-    return Boolean(this.child && this.threads.length > 0);
-  }
-
-  async runTranslationTurn(thread, { items, targetLanguage, requestId }) {
-    const startedAt = Date.now();
-    logInfo(`[${requestId}] codex turn start: ${items.length} cache misses (thread ${thread.id})`);
-    const prompt = [
-      `Translate each item into ${targetLanguage}.`,
-      "Preserve names, numbers, code-like tokens, links, and formatting intent.",
-      "Preserve paragraph breaks and newline structure from each input text.",
-      "Return only JSON matching the schema.",
-      "Each translation object must keep the exact same id and index as the input item.",
-      "Do not add, remove, split, merge, or reorder items.",
-      JSON.stringify({ targetLanguage, items })
-    ].join("\n");
-
-    const response = await this.request("turn/start", {
-      threadId: thread.id,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
-      model: CODEX_MODEL,
-      effort: "low",
-      summary: "none",
-      outputSchema: TRANSLATION_SCHEMA
-    });
-
-    const turnId = response.result.turn.id;
-    const outputText = await this.waitForTurn(turnId, CODEX_TIMEOUT_MS);
-    this.lastLatencyMs = Date.now() - startedAt;
-    logInfo(`[${requestId}] codex turn done: ${this.lastLatencyMs}ms`);
-    const parsed = parseModelJson(outputText);
-
-    if (!Array.isArray(parsed.translations)) {
-      throw new Error("Codex app-server output did not include translations array.");
+      });
+      this.warm = true;
+      this.lastError = null;
+      return response.result.thread.id;
+    } catch (error) {
+      this.lastError = error.message;
+      throw error;
     }
-
-    return normalizeTranslations(parsed.translations, items, "Codex app-server", requestId);
   }
 
-  request(method, params, timeoutMs = 30000) {
+  async bestEffortRequest(method, params, requestId) {
+    const tracksThreadCleanup = method === "thread/delete";
+    if (tracksThreadCleanup) {
+      this.threadCleanupPending += 1;
+    }
+    try {
+      await this.request(method, params, 5000);
+    } catch (error) {
+      if (tracksThreadCleanup) {
+        this.threadCleanupFailures += 1;
+      }
+      logWarn(`[${requestId}] ${method} cleanup failed: ${error.message}`);
+    } finally {
+      if (tracksThreadCleanup) {
+        this.threadCleanupPending = Math.max(0, this.threadCleanupPending - 1);
+      }
+    }
+  }
+
+  request(method, params, timeoutMs = 30000, onResponse) {
     return new Promise((resolve, reject) => {
       if (!this.child || !this.child.stdin.writable) {
         reject(new Error("Codex app-server is not running."));
@@ -425,6 +671,7 @@ class CodexAppClient {
       }, timeoutMs);
 
       this.pending.set(id, {
+        onResponse,
         resolve: (value) => {
           clearTimeout(timeout);
           resolve(value);
@@ -493,7 +740,12 @@ class CodexAppClient {
       if (message.error) {
         pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
       } else {
-        pending.resolve(message);
+        try {
+          pending.onResponse?.(message);
+          pending.resolve(message);
+        } catch (error) {
+          pending.reject(error);
+        }
       }
       return;
     }
@@ -521,16 +773,21 @@ class CodexAppClient {
       }
 
       this.activeTurns.delete(message.params.turn.id);
-      if (message.params.turn.status === "failed") {
-        turn.reject(new Error(message.params.turn.error?.message || "Codex app-server turn failed."));
-      } else {
+      if (message.params.turn.status === "completed") {
         turn.resolve(turn.text);
+      } else {
+        turn.reject(new Error(
+          message.params.turn.error?.message ||
+          `Codex app-server turn ended with status ${message.params.turn.status}.`
+        ));
       }
     }
   }
 
   failAll(error) {
     this.lastError = error instanceof Error ? error.message : String(error);
+    this.initialized = false;
+    this.warm = false;
 
     for (const pending of this.pending.values()) {
       pending.reject(error);
@@ -581,12 +838,10 @@ async function translateItemsWithCodex({ items, targetLanguage, requestId }) {
       "-"
     ];
 
-    logInfo(`[${requestId}] codex exec start: ${items.length} cache misses`);
+    logInfo(`[${requestId}] codex exec start: ${items.length} backend misses`);
     const startedAt = Date.now();
     const { stdout, stderr } = await runProcess(CODEX_BIN, args, prompt, CODEX_TIMEOUT_MS);
-    codexExecWarm = true;
-    codexExecLastLatencyMs = Date.now() - startedAt;
-    logInfo(`[${requestId}] codex exec done: ${codexExecLastLatencyMs}ms`);
+    logInfo(`[${requestId}] codex exec done: ${Date.now() - startedAt}ms`);
     const outputText = await readOutputText(outputPath, stdout);
     const parsed = parseModelJson(outputText);
 
@@ -601,10 +856,11 @@ async function translateItemsWithCodex({ items, targetLanguage, requestId }) {
 }
 
 async function translateItemsWithOpenAI({ items, targetLanguage, requestId }) {
-  logInfo(`[${requestId}] openai api start: ${items.length} cache misses`);
+  logInfo(`[${requestId}] openai api start: ${items.length} backend misses`);
   const startedAt = Date.now();
   const response = await fetch(`${OPENAI_BASE_URL}/responses`, {
     method: "POST",
+    signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     headers: {
       "Authorization": `Bearer ${OPENAI_API_KEY}`,
       "Content-Type": "application/json"
@@ -651,61 +907,53 @@ async function translateItemsWithOpenAI({ items, targetLanguage, requestId }) {
   return normalizeTranslations(parsed.translations, items, "Model", requestId);
 }
 
-// Every branch tags each result with `ok`: false means we had no real translation for
-// that item and fell back to the original text, so the caller can surface it as a
-// failure instead of silently rendering the source text as if it were translated.
-function normalizeTranslations(translations, items, source, requestId = "unknown") {
-  if (translations.every((item) => item && typeof item === "object" && item.id)) {
-    const byId = new Map(items.map((item) => [item.id, item]));
-    const result = items.map((item) => ({ id: item.id, text: item.text, ok: false }));
-    const seen = new Set();
+function normalizeTranslations(translations, items, source) {
+  if (translations.length !== items.length) {
+    throw new Error(`${source} returned ${translations.length} translations for ${items.length} inputs.`);
+  }
 
-    translations.forEach((translation) => {
-      const original = byId.get(translation.id);
-      if (!original || seen.has(translation.id)) {
-        logWarn(`[${requestId}] ${source} returned unknown or duplicate id ${translation.id}; ignoring item`);
-        return;
-      }
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const result = new Array(items.length);
+  const seen = new Set();
 
-      seen.add(translation.id);
-      result[original.index] = { id: original.id, text: String(translation.text || original.text), ok: true };
-    });
-
-    if (seen.size !== items.length) {
-      logWarn(`[${requestId}] ${source} returned ${seen.size}/${items.length} id-matched translations; filling missing items`);
+  translations.forEach((translation, position) => {
+    if (!translation || typeof translation !== "object" || Array.isArray(translation)) {
+      throw new Error(`${source} returned a non-object translation at position ${position}.`);
+    }
+    if (typeof translation.id !== "string" || !translation.id) {
+      throw new Error(`${source} returned a translation without a valid id at position ${position}.`);
+    }
+    if (!Number.isInteger(translation.index)) {
+      throw new Error(`${source} returned a translation without a valid index for ${translation.id}.`);
     }
 
-    return result;
-  }
+    const original = byId.get(translation.id);
+    if (!original) {
+      throw new Error(`${source} returned an unknown id ${translation.id}.`);
+    }
+    if (seen.has(translation.id)) {
+      throw new Error(`${source} returned a duplicate id ${translation.id}.`);
+    }
+    if (translation.index !== original.index) {
+      throw new Error(`${source} returned index ${translation.index} for ${translation.id}; expected ${original.index}.`);
+    }
 
-  logWarn(`[${requestId}] ${source} returned legacy positional translations; using best-effort alignment`);
-
-  if (translations.length === items.length) {
-    return translations.map((translation, index) => ({
-      id: items[index].id,
-      text: String(translation?.text || translation),
-      ok: true
-    }));
-  }
-
-  if (translations.length > items.length) {
-    logWarn(`[${requestId}] ${source} returned ${translations.length} translations for ${items.length} inputs; trimming extras`);
-    return translations.slice(0, items.length).map((translation, index) => ({
-      id: items[index].id,
-      text: String(translation?.text || translation),
-      ok: true
-    }));
-  }
-
-  logWarn(`[${requestId}] ${source} returned ${translations.length} translations for ${items.length} inputs; filling missing items`);
-  return items.map((item, index) => {
-    const translation = translations[index];
-    return {
-      id: item.id,
-      text: String(translation?.text || translation || item.text),
-      ok: Boolean(translation)
+    seen.add(translation.id);
+    result[original.index] = {
+      id: original.id,
+      text: requireTranslationText(translation.text, source, original.id)
     };
   });
+
+  return result;
+}
+
+function requireTranslationText(value, source, id) {
+  const text = String(value ?? "");
+  if (!text.trim()) {
+    throw new Error(`${source} returned an empty translation for ${id}.`);
+  }
+  return text;
 }
 
 function createRequestId() {
@@ -844,22 +1092,23 @@ function validateItems(value) {
   }
 
   return value.map((item, index) => {
+    const text = String(item && typeof item === "object" ? item.text ?? "" : item);
+    if (text.length > 20000) {
+      throw new Error(`item ${index} exceeds the 20000 character limit.`);
+    }
+
     if (item && typeof item === "object") {
       return {
         id: String(item.id || `legacy-${index}`),
         index,
-        tag: String(item.tag || ""),
-        path: String(item.path || ""),
-        text: String(item.text || "").slice(0, 4000)
+        text
       };
     }
 
     return {
       id: `legacy-${index}`,
       index,
-      tag: "",
-      path: "",
-      text: String(item).slice(0, 4000)
+      text
     };
   });
 }

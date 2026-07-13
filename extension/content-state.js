@@ -3,6 +3,8 @@ const PIT_STATE = {
   running: false,
   cancelRequested: false,
   dynamicObserver: null,
+  dynamicQueuedAt: 0,
+  dynamicQueue: new Map(),
   dynamicRoots: [],
   dynamicTimer: null,
   dynamicRouteUrl: location.href,
@@ -20,15 +22,21 @@ const PIT_STATE = {
   lazyQueue: [],
   lazyQueuedIds: new Set(),
   lazyTimer: null,
+  replaceStates: new Map(),
   translated: false,
   autoTranslateActive: false,
   nextBlockId: 1,
+  translationEpoch: 0,
   lastModel: "",
   sessionId: createShortId()
 };
 
 const PIT_MIN_BATCH_CHAR_LIMIT = 1800;
 const PIT_MAX_BATCH_CHAR_LIMIT = 18000;
+const PIT_INITIAL_ROOT_MARGIN = 600;
+const PIT_FIRST_BATCH_MAX_ITEMS = 8;
+const PIT_FIRST_BATCH_MAX_CHARS = 4000;
+const PIT_DYNAMIC_MAX_WAIT = 750;
 const PIT_TARGET_LANGUAGES = [
   "Chinese (Simplified)",
   "Chinese (Traditional)",
@@ -219,4 +227,3 @@ const PIT_SITE_RULES = [
     skipSelectors: ["nav", "header", "footer", "[aria-label*='advertise' i]"]
   }
 ];
-

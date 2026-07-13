@@ -64,9 +64,6 @@ async function translateCurrentSelection() {
     items: [{
       id: "selection",
       index: 0,
-      kind: "selection",
-      tag: "selection",
-      path: "selection",
       text
     }],
     targetLanguage: settings.targetLanguage,
@@ -83,9 +80,8 @@ async function translateCurrentSelection() {
   }
 
   const translations = normalizeTranslationMap([{ id: "selection" }], response.translations);
-  const result = translations.get("selection");
-  const translation = String(result?.text || "").trim();
-  if (!translation || result.ok === false) {
+  const translation = String(translations.get("selection") || "").trim();
+  if (!translation) {
     throw new Error("Selection translation returned empty text.");
   }
 

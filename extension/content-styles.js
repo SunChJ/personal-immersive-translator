@@ -31,6 +31,18 @@ function injectStyles() {
       margin: 0.28em 0 0;
     }
 
+    .pit-replace-original {
+      display: none !important;
+    }
+
+    .pit-translation-ready.pit-translation-replace {
+      margin: 0;
+      opacity: 1;
+      pointer-events: auto;
+      text-decoration: none;
+      user-select: text;
+    }
+
     .pit-translation-pending {
       display: flex;
       align-items: center;

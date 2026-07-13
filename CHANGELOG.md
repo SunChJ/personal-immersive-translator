@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.12 - 2026-07-09
+
+- Merged the `prism-ui-redesign` modular content runtime, shared helpers, event-driven SPA route patch, adaptive batching, and ahead-of-viewport lazy prefetch.
+- Preserved every DOM translation target while deduplicating exact full-text requests in the local server, including concurrent in-flight requests across tabs.
+- Combined an 8-item fast-first batch with character budgets and up to three concurrent tail batches, while keeping lazy and dynamic queues bounded without dropping content.
+- Bounded Codex app-server work to three FIFO turns by default; every turn still uses a fresh isolated temporary thread that is interrupted on failure and deleted after use.
+- Reworked bilingual injection around owner-linked `span` slots and made replace mode fully reversible so original links, nodes, formatting, and handlers survive clearing.
+- Fixed duplicate paragraphs, lazy multi-paragraph social posts, large dynamic insertions, stale responses after clear or SPA navigation, and late-mounted route content.
+- Added strict model-output validation, cross-request coalescing, bounded text-free runtime metrics, and authenticated metrics reset.
+- Added real-Chrome batch/SPA coverage plus deterministic HTTP and fake-Codex stress tools with JSON baselines, regression gates, and Hyperfine output.
+
 ## 0.2.11 - 2026-07-01
 
 - Fixed scroll-triggered lazy loading not benefiting from the codex-app thread pool: each viewport-entry flush was mutex-guarded one at a time and could dequeue up to 40 items, so batches got slower without gaining any parallelism. Lazy flushes now use their own smaller per-request cap (`PIT_LAZY_BATCH_ITEMS`, 16) and drain the queue with up to `PIT_MAX_CONCURRENT_BATCHES` workers running concurrently, while still holding the same busy flag other flows already rely on.

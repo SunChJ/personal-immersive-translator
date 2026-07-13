@@ -16,6 +16,9 @@ Personal Immersive Translator is a small personal Chrome extension for translati
 - Translate visible content first for faster perceived response.
 - Insert translations block-by-block instead of mixing text inline.
 - Match translations back to DOM blocks using stable `pitId` anchors.
+- Use a fast first batch and character-budgeted follow-up batches for responsive long-page translation.
+- Translate identical full text once and fan the result back out to every DOM position.
+- Keep replace mode reversible without destroying original links or inline nodes.
 - Keep a local translation cache for repeated text.
 - Use your logged-in Codex CLI session, with optional OpenAI API fallback.
 
@@ -54,7 +57,7 @@ Start Translator.command
 Or run manually:
 
 ```bash
-cd /Users/samsoncj/develop/personal-immersive-translator
+cd /path/to/personal-immersive-translator
 npm run doctor
 npm run start:codex
 ```
@@ -104,16 +107,16 @@ export OPENAI_API_KEY="sk-..."
 export OPENAI_MODEL="gpt-5.4-mini"
 ```
 
-Disable prewarm if needed:
+Prewarming initializes the Codex app-server and validates a temporary thread; it does not start a model turn. Disable it if needed:
 
 ```bash
 export CODEX_PREWARM=0
 ```
 
-The codex-app backend keeps a pool of independent threads on the same app-server process so multiple translation batches can run concurrently instead of queueing one at a time. Default is 3; tune it if needed:
+The codex-app backend runs up to three FIFO translation turns concurrently. Every turn gets a fresh temporary thread that is deleted afterward, so pages never share conversation history. Tune the bound if needed:
 
 ```bash
-export CODEX_APP_THREAD_POOL_SIZE=3
+export CODEX_APP_MAX_CONCURRENCY=3
 ```
 
 ## Useful Commands
@@ -121,9 +124,64 @@ export CODEX_APP_THREAD_POOL_SIZE=3
 ```bash
 npm run check:version
 npm run doctor
+npm run verify
+npm run observe
 npm run start:codex
 npm run start:api
 ```
+
+## Verification and Performance Observability
+
+The full verification suite uses a deterministic local fake backend and never calls a real model:
+
+```bash
+npm run verify
+```
+
+It runs version checks, pure unit tests, real-Chrome DOM injection tests, server integration tests, and a concurrent stress smoke test. Run each layer independently with:
+
+```bash
+npm run test:unit
+npm run test:batch
+npm run test:server
+npm run test:stress
+```
+
+Save two runs with identical settings to evaluate a change:
+
+```bash
+npm run perf -- --requests 200 --concurrency 24 --items 40 \
+  --unique-ratio 0.25 --delay-ms 50 \
+  --output artifacts/perf/baseline.json
+
+# After changing the code, create current.json with the same settings.
+npm run perf -- --requests 200 --concurrency 24 --items 40 \
+  --unique-ratio 0.25 --delay-ms 50 \
+  --output artifacts/perf/current.json
+
+npm run perf:compare -- \
+  artifacts/perf/baseline.json artifacts/perf/current.json
+```
+
+Reports include p50/p95/p99, throughput, errors, backend calls/items, and exact-dedupe/cache/coalescing savings. Comparison exits non-zero by default when p95 or throughput regresses by more than 10%, backend items increase, or the error rate increases. Generated `artifacts/perf/` files are ignored by Git.
+
+With `hyperfine` installed, measure the complete process lifecycle repeatedly:
+
+```bash
+npm run perf:hyperfine
+```
+
+The command also saves `artifacts/perf/hyperfine.json`.
+
+Inspect a running translator once, continuously, or after resetting its counters:
+
+```bash
+npm run observe
+npm run observe -- --watch 2
+npm run observe -- --reset
+```
+
+A one-shot observation exits non-zero when its verdict is `FAIL`. `GET /metrics` exposes only anonymous counts, cache/coalesced/backend sources, p50/p95/p99 for the latest 2048 requests, and runtime gauges. It never stores source text, translations, or DOM IDs. The token-protected reset does not clear the translation cache.
 
 ## Versioning
 
