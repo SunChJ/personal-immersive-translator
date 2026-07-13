@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.14 - 2026-07-12
+
+- Prevented duplicate auto-translation after a page refresh by keeping exactly one scheduled or running auto-translation job per tab navigation and invalidating stale retries.
+
 ## 0.2.13 - 2026-07-12
 
 - Simplified pending page-translation placeholders to show only the spinner, while retaining an accessible loading label.
