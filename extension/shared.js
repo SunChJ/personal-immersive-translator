@@ -3,8 +3,8 @@
 // `const`/`function` declarations land in the shared execution context of each surface
 // (content script isolated world, popup document, background service worker).
 
-const PIT_TOKEN = "pit-local-extension-token-v1";
 const PIT_DEFAULT_ENDPOINT = "http://127.0.0.1:8787";
+const PIT_DEFAULT_PAIRING_TOKEN = String(globalThis.GLOSS_PAIRING_TOKEN || "").trim();
 const PIT_DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
 const PIT_DEFAULT_BILINGUAL_STYLE = "dashed";
 const PIT_BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
@@ -22,13 +22,15 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
 const PIT_MAX_BATCH_ITEMS = 40;
 const PIT_DEFAULT_BATCH_CHAR_LIMIT = 10000;
 const PIT_HEALTH_TIMEOUT_MS = 5000;
+const PIT_TARGET_LANGUAGE_PATTERN = /^[\p{L}\p{M}\p{N} _(),.'’-]{1,100}$/u;
 
 function normalizeTargetLanguage(value) {
   const language = String(value || "").trim();
   if (!language) {
     return PIT_DEFAULT_TARGET_LANGUAGE;
   }
-  return PIT_LEGACY_TARGET_LANGUAGE_ALIASES.get(language) || language;
+  const normalized = PIT_LEGACY_TARGET_LANGUAGE_ALIASES.get(language) || language;
+  return PIT_TARGET_LANGUAGE_PATTERN.test(normalized) ? normalized : PIT_DEFAULT_TARGET_LANGUAGE;
 }
 
 function normalizeBilingualStyle(value) {
@@ -37,6 +39,10 @@ function normalizeBilingualStyle(value) {
 
 function normalizeEndpoint(endpoint) {
   return String(endpoint || "").trim().replace(/\/+$/, "") || PIT_DEFAULT_ENDPOINT;
+}
+
+function normalizePairingToken(value) {
+  return String(value || "").trim();
 }
 
 function prettyModelLabel(model, fallback = "Codex Spark 5.3") {

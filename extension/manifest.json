@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Prism — Immersive Translator",
-  "description": "Immersive bilingual page translation through a local Codex bridge.",
-  "version": "0.2.15",
+  "name": "Gloss — Immersive Translator",
+  "description": "Top-tier bilingual page translation powered by the Gloss macOS app.",
+  "version": "0.3.4",
+  "version_name": "0.3.4 (PIT 0.2.15)",
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Prism — Translate this page"
+    "default_title": "Gloss — Translate this page"
   },
   "background": {
     "service_worker": "background.js"
@@ -36,8 +37,8 @@
     }
   ],
   "host_permissions": [
-    "http://127.0.0.1:8787/*",
-    "http://localhost:8787/*"
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "permissions": ["activeTab", "scripting", "storage", "tabs"]
 }

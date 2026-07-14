@@ -56,7 +56,7 @@ function mountFloatingControl() {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M12 4 L20 19 L4 19 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" fill="rgba(42,111,219,0.12)"/>
           </svg>
-          <span class="pit-floating-title">Prism</span>
+          <span class="pit-floating-title">Gloss</span>
         </div>
         <span class="pit-floating-badge" data-role="badge" data-ok="true">ON</span>
       </div>
@@ -359,7 +359,7 @@ async function checkFloatingHealth(root, endpoint) {
     if (body.model) {
       PIT_STATE.lastModel = body.model;
     }
-    const model = prettyModelLabel(body.model);
+    const model = body.name === "Gloss" ? "Gloss · Codex ready" : prettyModelLabel(body.model);
     serverState.textContent = body.warm === false ? `${model} warming` : model;
     latency.textContent = body.lastLatencyMs ? `${body.lastLatencyMs}ms` : body.warm === false ? "warming" : "--";
     badge.textContent = PIT_STATE.running ? "BUSY" : "ON";
@@ -409,7 +409,7 @@ async function translateFromFloating() {
 function readTranslationSettings() {
   return chrome.storage.local.get({
     targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
-    endpoint: "http://127.0.0.1:8787",
+    endpoint: PIT_DEFAULT_ENDPOINT,
     mode: "bilingual",
     bilingualStyle: PIT_DEFAULT_BILINGUAL_STYLE,
     clearPrevious: true,
@@ -510,4 +510,3 @@ function clamp(value, min, max) {
   }
   return Math.max(min, Math.min(max, value));
 }
-

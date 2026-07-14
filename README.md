@@ -1,10 +1,10 @@
-# Personal Immersive Translator
+# Gloss Browser Extension
 
-> A local-first Chrome page translator powered by your logged-in Codex CLI session.
+> Immersive page translation powered by the Gloss macOS app and your existing Codex login.
 
 [中文文档](./README.zh-CN.md) · [Changelog](./CHANGELOG.md)
 
-Personal Immersive Translator is a small personal Chrome extension for translating the current web page. It keeps credentials out of the browser by routing translation requests through a local Node.js server. By default, that server keeps a warm Codex app-server process and uses your ChatGPT/Codex login with `gpt-5.3-codex-spark`.
+The Gloss extension adds page, selection, bilingual, and replace-mode translation to Chrome. Translation runs through the native Gloss app, so Chrome never receives a ChatGPT credential and no terminal service needs to stay open.
 
 ## Features
 
@@ -20,25 +20,24 @@ Personal Immersive Translator is a small personal Chrome extension for translati
 - Translate identical full text once and fan the result back out to every DOM position.
 - Keep replace mode reversible without destroying original links or inline nodes.
 - Keep a local translation cache for repeated text.
-- Use your logged-in Codex CLI session, with optional OpenAI API fallback.
+- Share Gloss's native translation broker, cache, and logged-in Codex session.
 
 ## Architecture
 
 ```text
 Chrome extension
-  -> local server at http://127.0.0.1:8787
-    -> persistent Codex app-server
-      -> gpt-5.3-codex-spark
+  -> authenticated loopback bridge at http://127.0.0.1:8787
+    -> Gloss TranslationBroker
+      -> Codex app-server
 ```
 
-The extension never stores an API key or ChatGPT token. It only talks to the local server. The local server starts and manages the Codex process on your machine.
+Gloss creates a random 256-bit pairing token and injects it into the App-managed extension copy; both the source token and generated configuration use `0600` permissions. The bridge listens only on `127.0.0.1`, accepts Chrome-extension origins, and never exposes a ChatGPT credential to Chrome.
 
 ## Requirements
 
 - macOS
 - Chrome
-- Node.js 18+
-- GitHub is not required to run the extension
+- Gloss
 - Codex CLI logged in with ChatGPT:
 
 ```bash
@@ -48,30 +47,32 @@ codex login status
 
 ## Quick Start
 
-Double-click:
+Build and open Gloss from the repository root:
 
-```text
-Start Translator.command
+```bash
+cd Gloss
+./Scripts/build_app.sh
+open dist/Gloss.app
 ```
 
-Or run manually:
+Then open **Gloss Settings → Browser Extension**. Use **Show Extension** to reveal the App-managed, automatically paired extension folder.
+
+For extension development, Node.js 18+ is only required to run checks:
 
 ```bash
 cd /path/to/personal-immersive-translator
-npm run doctor
-npm run start:codex
+npm run verify
 ```
-
-Keep the terminal window open while translating.
 
 ## Load the Chrome Extension
 
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Click Load unpacked.
-4. Select the `extension/` folder.
-5. Open a normal web page.
-6. Use the floating `译` button or the extension popup to translate.
+1. In Gloss Settings, click **Show Extension**.
+2. Open `chrome://extensions` and enable Developer mode.
+3. Click **Load unpacked** and select the revealed `BrowserExtension` folder.
+4. Allow Chrome **Local Network Access** if prompted; it is required to reach Gloss on `127.0.0.1`.
+5. Use the floating button or extension popup to translate.
+
+For source development, load this repository's `extension/` folder instead and paste the token from Gloss Settings into the extension.
 
 Chrome internal pages such as `chrome://extensions` cannot be translated because Chrome blocks content scripts there.
 
@@ -84,18 +85,22 @@ The extension injects a small floating translate button on normal web pages.
 - Right-click it to open the floating menu with server status, target language, mode, and quick actions.
 - If hidden, reopen the extension popup and enable `Advanced -> Show floating button`.
 
-## Configuration
+## Translation Settings
 
 The popup includes common targets such as Chinese, English, Japanese, Korean, French, German, Spanish, Portuguese, Italian, Russian, Arabic, Hindi, Vietnamese, Thai, and Indonesian. Choose `Custom...` to enter any other target language or locale, for example `Dutch` or `Brazilian Portuguese`.
 
-The default backend is the persistent Codex app-server mode:
+Gloss owns the backend and model lifecycle. The browser extension only stores page-display preferences, the loopback endpoint, and its per-install pairing token.
+
+## Legacy Node Service
+
+The existing Node service remains available as a development and compatibility harness. It is not required by the Gloss product path:
 
 ```bash
 export TRANSLATOR_BACKEND="codex-app"
 export CODEX_MODEL="gpt-5.3-codex-spark"
 ```
 
-Other supported backends:
+Other legacy backends:
 
 ```bash
 # Slower compatibility mode. Starts codex exec for every batch.
@@ -138,7 +143,7 @@ The full verification suite uses a deterministic local fake backend and never ca
 npm run verify
 ```
 
-It runs version checks, pure unit tests, real-Chrome DOM injection tests, server integration tests, and a concurrent stress smoke test. Run each layer independently with:
+It runs version checks, pure unit tests, real-Chrome DOM injection tests, a real loaded-extension/service-worker loopback test, server integration tests, and a concurrent stress smoke test. Run each layer independently with:
 
 ```bash
 npm run test:unit

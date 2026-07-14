@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-echo "Starting Personal Immersive Translator..."
+echo "Starting the legacy Gloss development server..."
 echo
 
 if ! command -v codex >/dev/null 2>&1; then

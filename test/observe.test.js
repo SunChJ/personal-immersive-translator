@@ -21,7 +21,7 @@ test("observe CLI evaluates metrics without exposing content", async () => {
     const endpoint = `http://127.0.0.1:${server.address().port}`;
     const report = await execFileAsync(process.execPath, [OBSERVE, "--endpoint", endpoint]);
 
-    assert.match(report.stdout, /Prism metrics\s+PASS/);
+    assert.match(report.stdout, /Gloss metrics\s+PASS/);
     assert.match(report.stdout, /10\/10 ok \(100\.0%\)/);
     assert.match(report.stdout, /p95 42\.0ms/);
     assert.match(report.stdout, /latest 10/);
@@ -50,7 +50,7 @@ test("observe CLI evaluates metrics without exposing content", async () => {
       execFileAsync(process.execPath, [OBSERVE, "--endpoint", endpoint]),
       (error) => {
         assert.equal(error.code, 1);
-        assert.match(error.stdout, /Prism metrics\s+FAIL/);
+        assert.match(error.stdout, /Gloss metrics\s+FAIL/);
         return true;
       }
     );

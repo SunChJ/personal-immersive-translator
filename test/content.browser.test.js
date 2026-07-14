@@ -97,6 +97,14 @@ test("pending Set prevents the same block from entering a batch twice", async ()
   assert.equal(result.readySlots, 1);
 });
 
+test("new pending work starts while an earlier drain is active", async () => {
+  const result = await getBrowserSuiteResult("pending-overlap");
+  assert.deepEqual(result.batchSizes, [1, 1, 1, 1]);
+  assert.equal(result.maxActive, 3);
+  assert.equal(result.pendingQueueSize, 0);
+  assert.equal(result.readySlots, 4);
+});
+
 test("SPA navigation cancels stale responses and translates the new route", async () => {
   const result = await getBrowserSuiteResult("spa-stale-response");
   assert.equal(result.cancelled, true);
@@ -118,9 +126,10 @@ test("extension surfaces load shared and split scripts in a valid order", () => 
   });
 
   const popupHtml = fs.readFileSync(path.join(ROOT, "extension", "popup.html"), "utf8");
+  assert.ok(popupHtml.indexOf('src="gloss-config.js"') < popupHtml.indexOf('src="shared.js"'));
   assert.ok(popupHtml.indexOf('src="shared.js"') < popupHtml.indexOf('src="popup.js"'));
   const background = fs.readFileSync(path.join(ROOT, "extension", "background.js"), "utf8");
-  assert.match(background, /^importScripts\("shared\.js"\);/);
+  assert.match(background, /^importScripts\("gloss-config\.js", "shared\.js"\);/);
 });
 
 async function getBrowserSuiteResult(caseName) {
@@ -420,7 +429,7 @@ function createHarnessHtml(routeSources, contentSources) {
       return window.__pitCalls.filter((message) => message.type === "translate-batch");
     }
 
-    function waitFor(predicate, timeoutMs = 4000) {
+    function waitFor(predicate, timeoutMs = 4000, label = "browser test condition") {
       const started = performance.now();
       return new Promise((resolve, reject) => {
         const poll = () => {
@@ -429,7 +438,7 @@ function createHarnessHtml(routeSources, contentSources) {
             return;
           }
           if (performance.now() - started >= timeoutMs) {
-            reject(new Error("Timed out waiting for browser test condition"));
+            reject(new Error("Timed out waiting for " + label));
             return;
           }
           setTimeout(poll, 20);
@@ -554,7 +563,11 @@ function createHarnessHtml(routeSources, contentSources) {
         });
 
         const pending = translatePage(TEST_OPTIONS);
-        await waitFor(() => translationCalls().length === 1 && typeof release === "function");
+        await waitFor(
+          () => translationCalls().length === 1 && typeof release === "function",
+          4000,
+          "the delayed cancellation batch"
+        );
         const pendingSlot = document.querySelector(".pit-translation-pending");
         const pendingText = pendingSlot?.textContent.trim() || "";
         const pendingAriaLabel = pendingSlot?.getAttribute("aria-label") || "";
@@ -601,6 +614,7 @@ function createHarnessHtml(routeSources, contentSources) {
         setBody("<main>" + paragraphs + "</main>");
         window.scrollTo(0, 4200);
         let release;
+        let releaseUpward;
         let requestCount = 0;
         window.__pitRuntime.send = (message) => {
           requestCount += 1;
@@ -612,18 +626,40 @@ function createHarnessHtml(routeSources, contentSources) {
               });
             });
           }
+          if (message.items.some((item) => item.text.includes("Upward pending paragraph 0 remains readable"))) {
+            return new Promise((resolve) => {
+              releaseUpward = () => resolve({
+                ok: true,
+                translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+              });
+            });
+          }
           return window.__pitDefaultSend(message);
         };
 
         const translating = translatePage({ ...TEST_OPTIONS, viewportFirst: true });
-        await waitFor(() => translationCalls().length === 1 && typeof release === "function");
+        await waitFor(
+          () => translationCalls().length >= 1 && typeof release === "function",
+          4000,
+          "the initial upward-scroll batch"
+        );
         window.scrollTo(0, 0);
         window.dispatchEvent(new Event("scroll"));
-        await waitFor(() => document.querySelector("#up-0 > .pit-translation-pending"));
+        await waitFor(
+          () => document.querySelector("#up-0 > .pit-translation-pending"),
+          4000,
+          "the upward-scroll pending surface"
+        );
         const upwardPending = Boolean(document.querySelector("#up-0 > .pit-translation-pending"));
+        await waitFor(() => typeof releaseUpward === "function", 4000, "the upward-scroll request");
+        releaseUpward();
         release();
         await translating;
-        await waitFor(() => document.querySelector("#up-0 > .pit-translation-ready"), 6000);
+        await waitFor(
+          () => document.querySelector("#up-0 > .pit-translation-ready"),
+          6000,
+          "the completed upward-scroll translation"
+        );
         return {
           upwardPending,
           topReady: Boolean(document.querySelector("#up-0 > .pit-translation-ready"))
@@ -658,6 +694,52 @@ function createHarnessHtml(routeSources, contentSources) {
           queuedEntries,
           backendCalls: translationCalls().length,
           readySlots: document.querySelectorAll("#dedupe-owner > .pit-translation-ready").length
+        };
+      }
+
+      if (name === "pending-overlap") {
+        setBody(
+          '<main><p id="overlap-1">First overlapping translation batch.</p>' +
+          '<p id="overlap-2">Second overlapping translation batch.</p>' +
+          '<p id="overlap-3">Third overlapping translation batch.</p>' +
+          '<p id="overlap-4">Fourth overlapping translation batch.</p></main>'
+        );
+        await waitFor(() => !PIT_STATE.pendingDraining);
+        PIT_STATE.cancelRequested = false;
+        const entries = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        let active = 0;
+        let maxActive = 0;
+        const releases = [];
+        window.__pitRuntime.send = (message) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          return new Promise((resolve) => {
+            releases.push(() => {
+              active -= 1;
+              resolve({
+                ok: true,
+                translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+              });
+            });
+          });
+        };
+
+        const drains = entries.map((entry) => {
+          enqueuePendingTranslations([entry], TEST_OPTIONS, { priority: 2 });
+          return flushPendingTranslationQueue(PIT_STATE.translationEpoch);
+        });
+        await waitFor(() => translationCalls().length === 3 && releases.length === 3);
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+        const firstRelease = releases.shift();
+        firstRelease();
+        await waitFor(() => translationCalls().length === 4 && releases.length === 3);
+        releases.splice(0).forEach((release) => release());
+        await Promise.all(drains);
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          maxActive,
+          pendingQueueSize: PIT_STATE.pendingQueue.size,
+          readySlots: document.querySelectorAll(".pit-translation-ready").length
         };
       }
 
@@ -720,9 +802,14 @@ function createHarnessHtml(routeSources, contentSources) {
         "upward-pending",
         "pending-cache",
         "pending-set-dedupe",
+        "pending-overlap",
         "spa-stale-response"
       ]) {
-        results[name] = await runCase(name);
+        try {
+          results[name] = await runCase(name);
+        } catch (error) {
+          throw new Error("Browser case " + name + " failed: " + (error?.stack || error));
+        }
       }
       return results;
     }
