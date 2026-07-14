@@ -215,7 +215,23 @@ async function readPairingToken() {
   const settings = await chrome.storage.local.get({
     pairingToken: PIT_DEFAULT_PAIRING_TOKEN
   });
-  return normalizePairingToken(settings.pairingToken);
+  const storedToken = normalizePairingToken(settings.pairingToken);
+  if (storedToken || PIT_BROWSER_TARGET !== "safari" || !chrome.runtime.sendNativeMessage) {
+    return storedToken;
+  }
+
+  try {
+    const response = await chrome.runtime.sendNativeMessage("com.samsoncj.gloss", {
+      type: "pairing-token"
+    });
+    const nativeToken = normalizePairingToken(response?.pairingToken);
+    if (nativeToken) {
+      await chrome.storage.local.set({ pairingToken: nativeToken });
+    }
+    return nativeToken;
+  } catch {
+    return "";
+  }
 }
 
 function authHeaders(pairingToken) {

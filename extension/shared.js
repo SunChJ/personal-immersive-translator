@@ -4,6 +4,7 @@
 // (content script isolated world, popup document, background service worker).
 
 const PIT_DEFAULT_ENDPOINT = "http://127.0.0.1:8787";
+const PIT_BROWSER_TARGET = String(globalThis.GLOSS_BROWSER_TARGET || "chrome").trim();
 const PIT_DEFAULT_PAIRING_TOKEN = String(globalThis.GLOSS_PAIRING_TOKEN || "").trim();
 const PIT_DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
 const PIT_DEFAULT_BILINGUAL_STYLE = "dashed";

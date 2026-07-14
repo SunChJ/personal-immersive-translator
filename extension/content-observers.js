@@ -261,6 +261,9 @@ function startRouteTranslationWatcher(options) {
   window.addEventListener("popstate", handler);
   window.addEventListener("hashchange", handler);
   window.addEventListener(PIT_ROUTE_CHANGE_EVENT, handler);
+  if (PIT_BROWSER_TARGET === "safari") {
+    PIT_STATE.routePollTimer = window.setInterval(handler, 1000);
+  }
 }
 
 function stopRouteTranslationWatcher() {
@@ -271,6 +274,8 @@ function stopRouteTranslationWatcher() {
     PIT_STATE.routeEventHandler = null;
   }
 
+  window.clearInterval(PIT_STATE.routePollTimer);
+  PIT_STATE.routePollTimer = null;
   PIT_STATE.routeSettlingTimers.forEach((timer) => window.clearTimeout(timer));
   PIT_STATE.routeSettlingTimers = [];
   window.clearTimeout(PIT_STATE.routeTranslationTimer);

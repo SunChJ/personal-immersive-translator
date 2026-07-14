@@ -7,7 +7,8 @@ const path = require("node:path");
 const test = require("node:test");
 
 const ROOT = path.join(__dirname, "..");
-const MANIFEST_PATH = path.join(ROOT, "extension", "manifest.json");
+const EXTENSION_DIR = path.join(ROOT, ".output", "chrome-mv3");
+const MANIFEST_PATH = path.join(EXTENSION_DIR, "manifest.json");
 const CHROME = findChrome();
 const ACTIVE_CHROME_PIDS = new Set();
 const ACTIVE_TEMP_DIRS = new Set();
@@ -119,16 +120,16 @@ test("extension surfaces load shared and split scripts in a valid order", () => 
   const isolated = manifest.content_scripts.find((entry) => entry.world !== "MAIN");
 
   assert.deepEqual(main?.js, ["route-patch.js"]);
-  assert.equal(isolated?.js[0], "shared.js");
+  assert.deepEqual(isolated?.js.slice(0, 2), ["gloss-config.js", "shared.js"]);
   assert.equal(isolated?.js.at(-1), "content.js");
   isolated.js.forEach((file) => {
-    assert.equal(fs.existsSync(path.join(ROOT, "extension", file)), true, `${file} is missing`);
+    assert.equal(fs.existsSync(path.join(EXTENSION_DIR, file)), true, `${file} is missing`);
   });
 
-  const popupHtml = fs.readFileSync(path.join(ROOT, "extension", "popup.html"), "utf8");
+  const popupHtml = fs.readFileSync(path.join(EXTENSION_DIR, "popup.html"), "utf8");
   assert.ok(popupHtml.indexOf('src="gloss-config.js"') < popupHtml.indexOf('src="shared.js"'));
   assert.ok(popupHtml.indexOf('src="shared.js"') < popupHtml.indexOf('src="popup.js"'));
-  const background = fs.readFileSync(path.join(ROOT, "extension", "background.js"), "utf8");
+  const background = fs.readFileSync(path.join(EXTENSION_DIR, "background.js"), "utf8");
   assert.match(background, /^importScripts\("gloss-config\.js", "shared\.js"\);/);
 });
 
@@ -353,7 +354,7 @@ function wait(ms) {
 }
 
 function readExtensionScript(file) {
-  return fs.readFileSync(path.join(ROOT, "extension", file), "utf8").replace(/<\/script/gi, "<\\/script");
+  return fs.readFileSync(path.join(EXTENSION_DIR, file), "utf8").replace(/<\/script/gi, "<\\/script");
 }
 
 function scriptTags(sources) {

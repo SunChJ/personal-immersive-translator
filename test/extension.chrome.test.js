@@ -7,6 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const ROOT = path.resolve(__dirname, "..");
+const BUILT_EXTENSION = path.join(ROOT, ".output", "chrome-mv3");
 const CHROME = findChrome();
 const PAIRING_TOKEN = "gloss-extension-test-token";
 
@@ -26,7 +27,7 @@ test("loaded Chrome extension translates through its real service worker", { tim
   let workerCDP = null;
 
   try {
-    fs.cpSync(path.join(ROOT, "extension"), extensionDir, { recursive: true });
+    fs.cpSync(BUILT_EXTENSION, extensionDir, { recursive: true });
 
     let translationRequest = null;
     const bridgeRequests = [];
