@@ -19,9 +19,11 @@ const PIT_STATE = {
   selectionRequestId: 0,
   selectionTranslationEnabled: true,
   lazyObserver: null,
-  lazyQueue: [],
-  lazyQueuedIds: new Set(),
-  lazyTimer: null,
+  pendingQueue: new Map(),
+  pendingIds: new Set(),
+  pendingDraining: false,
+  pendingTimer: null,
+  translationCache: new Map(),
   replaceStates: new Map(),
   translated: false,
   autoTranslateActive: false,
@@ -37,6 +39,8 @@ const PIT_INITIAL_ROOT_MARGIN = 600;
 const PIT_FIRST_BATCH_MAX_ITEMS = 8;
 const PIT_FIRST_BATCH_MAX_CHARS = 4000;
 const PIT_DYNAMIC_MAX_WAIT = 750;
+const PIT_PENDING_DRAIN_LIMIT = 128;
+const PIT_TRANSLATION_CACHE_LIMIT = 1200;
 const PIT_TARGET_LANGUAGES = [
   "Chinese (Simplified)",
   "Chinese (Traditional)",

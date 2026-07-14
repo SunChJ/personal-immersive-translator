@@ -4,7 +4,8 @@ const TRANSLATE_TIMEOUT_MS = 135000;
 const AUTO_TRANSLATE_DELAY_MS = 700;
 
 const autoTranslateTimers = new Map();
-const autoTranslateUrls = new Map();
+const autoTranslateJobs = new Map();
+const autoTranslateGenerations = new Map();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !["translate-batch", "check-health"].includes(message.type)) {
@@ -26,8 +27,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === "loading") {
-    clearAutoTranslateTimer(tabId);
-    autoTranslateUrls.delete(tabId);
+    invalidateAutoTranslate(tabId);
     return;
   }
 
@@ -39,8 +39,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  clearAutoTranslateTimer(tabId);
-  autoTranslateUrls.delete(tabId);
+  invalidateAutoTranslate(tabId);
+  autoTranslateGenerations.delete(tabId);
 });
 
 async function translateBatch(message) {
@@ -103,24 +103,34 @@ async function scheduleAutoTranslate(tabId, url) {
     return;
   }
 
-  if (autoTranslateUrls.get(tabId) === url) {
+  const generation = autoTranslateGenerations.get(tabId) || 0;
+  const existingJob = autoTranslateJobs.get(tabId);
+  if (existingJob?.url === url && existingJob.generation === generation) {
     return;
   }
 
   clearAutoTranslateTimer(tabId);
+  const job = { generation, url };
+  autoTranslateJobs.set(tabId, job);
   const timer = setTimeout(async () => {
     autoTranslateTimers.delete(tabId);
+    if (!isCurrentAutoTranslateJob(tabId, job)) {
+      return;
+    }
+
     try {
-      await sendAutoTranslateMessage(tabId, url, settings);
-      autoTranslateUrls.set(tabId, url);
+      await sendAutoTranslateMessage(tabId, url, settings, job);
     } catch {
+      if (isCurrentAutoTranslateJob(tabId, job)) {
+        autoTranslateJobs.delete(tabId);
+      }
       // Restricted pages and sleeping content scripts should not surface noisy errors.
     }
   }, AUTO_TRANSLATE_DELAY_MS);
   autoTranslateTimers.set(tabId, timer);
 }
 
-async function sendAutoTranslateMessage(tabId, url, settings) {
+async function sendAutoTranslateMessage(tabId, url, settings, job) {
   const options = {
     targetLanguage: normalizeTargetLanguage(settings.targetLanguage),
     endpoint: normalizeEndpoint(settings.endpoint),
@@ -137,6 +147,10 @@ async function sendAutoTranslateMessage(tabId, url, settings) {
 
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!isCurrentAutoTranslateJob(tabId, job)) {
+      throw new Error("Auto translation was superseded by navigation.");
+    }
+
     try {
       const response = await chrome.tabs.sendMessage(tabId, {
         type: "start-page-translation",
@@ -149,6 +163,9 @@ async function sendAutoTranslateMessage(tabId, url, settings) {
     } catch (error) {
       lastError = error;
       await wait(400 + attempt * 400);
+      if (!isCurrentAutoTranslateJob(tabId, job)) {
+        throw new Error("Auto translation was superseded by navigation.");
+      }
       const currentTab = await chrome.tabs.get(tabId);
       if (currentTab.url !== url) {
         throw new Error("Tab navigated before auto translation started.");
@@ -165,6 +182,16 @@ function clearAutoTranslateTimer(tabId) {
     clearTimeout(timer);
     autoTranslateTimers.delete(tabId);
   }
+}
+
+function invalidateAutoTranslate(tabId) {
+  clearAutoTranslateTimer(tabId);
+  autoTranslateJobs.delete(tabId);
+  autoTranslateGenerations.set(tabId, (autoTranslateGenerations.get(tabId) || 0) + 1);
+}
+
+function isCurrentAutoTranslateJob(tabId, job) {
+  return autoTranslateJobs.get(tabId) === job;
 }
 
 function defaultTranslationSettings() {

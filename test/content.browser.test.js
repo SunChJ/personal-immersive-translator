@@ -61,6 +61,9 @@ test("replace mode preserves original nodes and clear restores them", async () =
 test("clearing while a response is delayed prevents stale injection", async () => {
   const result = await getBrowserSuiteResult("delayed-cancel");
   assert.equal(result.cancelled, true);
+  assert.equal(result.pendingText, "");
+  assert.equal(result.pendingAriaLabel, "Translation loading");
+  assert.equal(result.pendingSpinnerCount, 1);
   assert.equal(result.readySlots, 0);
   assert.equal(result.pendingSlots, 0);
   assert.equal(result.translatedFlag, "false");
@@ -69,9 +72,29 @@ test("clearing while a response is delayed prevents stale injection", async () =
 test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, async () => {
   const result = await getBrowserSuiteResult("dynamic-80");
   assert.equal(result.readySlots, 80);
-  assert.deepEqual(result.batchSizes, [40, 40]);
+  assert.deepEqual(result.batchSizes, [8, 40, 32]);
   assert.equal(result.queueSize, 0);
   assert.equal(result.running, false);
+});
+
+test("upward scrolling shows pending slots before the initial batch completes", async () => {
+  const result = await getBrowserSuiteResult("upward-pending");
+  assert.equal(result.upwardPending, true);
+  assert.equal(result.topReady, true);
+});
+
+test("pending work deduplicates entries and applies cached translations", async () => {
+  const result = await getBrowserSuiteResult("pending-cache");
+  assert.equal(result.backendCalls, 1);
+  assert.equal(result.readySlots, 2);
+  assert.equal(result.pendingQueueSize, 0);
+});
+
+test("pending Set prevents the same block from entering a batch twice", async () => {
+  const result = await getBrowserSuiteResult("pending-set-dedupe");
+  assert.equal(result.queuedEntries, 1);
+  assert.equal(result.backendCalls, 1);
+  assert.equal(result.readySlots, 1);
 });
 
 test("SPA navigation cancels stale responses and translates the new route", async () => {
@@ -532,12 +555,19 @@ function createHarnessHtml(routeSources, contentSources) {
 
         const pending = translatePage(TEST_OPTIONS);
         await waitFor(() => translationCalls().length === 1 && typeof release === "function");
+        const pendingSlot = document.querySelector(".pit-translation-pending");
+        const pendingText = pendingSlot?.textContent.trim() || "";
+        const pendingAriaLabel = pendingSlot?.getAttribute("aria-label") || "";
+        const pendingSpinnerCount = pendingSlot?.querySelectorAll(".pit-translation-spinner").length || 0;
         clearTranslations();
         release();
         const summary = await pending;
         const owner = document.getElementById("delayed-owner");
         return {
           cancelled: summary.cancelled === true,
+          pendingText,
+          pendingAriaLabel,
+          pendingSpinnerCount,
           pendingSlots: document.querySelectorAll(".pit-translation-pending").length,
           readySlots: document.querySelectorAll(".pit-translation-ready").length,
           translatedFlag: owner.dataset.pitTranslated || "false"
@@ -561,6 +591,73 @@ function createHarnessHtml(routeSources, contentSources) {
           queueSize: PIT_STATE.dynamicQueue.size,
           readySlots: root.querySelectorAll(".pit-translation-ready").length,
           running: PIT_STATE.running
+        };
+      }
+
+      if (name === "upward-pending") {
+        const paragraphs = Array.from({ length: 320 }, (_, index) =>
+          '<p id="up-' + index + '">Upward pending paragraph ' + index + ' remains readable while the first batch is active.</p>'
+        ).join("");
+        setBody("<main>" + paragraphs + "</main>");
+        window.scrollTo(0, 4200);
+        let release;
+        let requestCount = 0;
+        window.__pitRuntime.send = (message) => {
+          requestCount += 1;
+          if (requestCount === 1) {
+            return new Promise((resolve) => {
+              release = () => resolve({
+                ok: true,
+                translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+              });
+            });
+          }
+          return window.__pitDefaultSend(message);
+        };
+
+        const translating = translatePage({ ...TEST_OPTIONS, viewportFirst: true });
+        await waitFor(() => translationCalls().length === 1 && typeof release === "function");
+        window.scrollTo(0, 0);
+        window.dispatchEvent(new Event("scroll"));
+        await waitFor(() => document.querySelector("#up-0 > .pit-translation-pending"));
+        const upwardPending = Boolean(document.querySelector("#up-0 > .pit-translation-pending"));
+        release();
+        await translating;
+        await waitFor(() => document.querySelector("#up-0 > .pit-translation-ready"), 6000);
+        return {
+          upwardPending,
+          topReady: Boolean(document.querySelector("#up-0 > .pit-translation-ready"))
+        };
+      }
+
+      if (name === "pending-cache") {
+        setBody('<main><p id="cache-seed">Cache this exact dynamic sentence once.</p></main>');
+        await translatePage(TEST_OPTIONS);
+        const duplicate = document.createElement("p");
+        duplicate.id = "cache-duplicate";
+        duplicate.textContent = "Cache this exact dynamic sentence once.";
+        document.querySelector("main").appendChild(duplicate);
+        await waitFor(() => document.querySelector("#cache-duplicate > .pit-translation-ready"));
+        return {
+          backendCalls: translationCalls().length,
+          readySlots: document.querySelectorAll(".pit-translation-ready").length,
+          pendingQueueSize: PIT_STATE.pendingQueue.size
+        };
+      }
+
+      if (name === "pending-set-dedupe") {
+        setBody('<main><p id="dedupe-owner">This block must enter the pending queue only once.</p></main>');
+        await waitFor(() => !PIT_STATE.pendingDraining);
+        PIT_STATE.cancelRequested = false;
+        const [entry] = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        enqueuePendingTranslations([entry], TEST_OPTIONS, { priority: 2 });
+        enqueuePendingTranslations([entry], TEST_OPTIONS, { priority: 2 });
+        const queuedEntries = PIT_STATE.pendingQueue.size;
+        await flushPendingTranslationQueue(PIT_STATE.translationEpoch);
+        return {
+          queuedEntries,
+          backendCalls: translationCalls().length,
+          readySlots: document.querySelectorAll("#dedupe-owner > .pit-translation-ready").length
         };
       }
 
@@ -620,6 +717,9 @@ function createHarnessHtml(routeSources, contentSources) {
         "replace-restore",
         "delayed-cancel",
         "dynamic-80",
+        "upward-pending",
+        "pending-cache",
+        "pending-set-dedupe",
         "spa-stale-response"
       ]) {
         results[name] = await runCase(name);
