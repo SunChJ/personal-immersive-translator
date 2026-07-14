@@ -24,6 +24,7 @@ const PIT_STATE = {
   pendingIds: new Set(),
   pendingDraining: 0,
   pendingTimer: null,
+  pendingQueuedAt: 0,
   activeBatchRequests: 0,
   batchRequestWaiters: [],
   translationCache: new Map(),

@@ -185,7 +185,12 @@ function takeTranslationBatch(entries, offset, maxItems, maxChars) {
 // selection translation or another foreground interaction.
 const PIT_MAX_CONCURRENT_PAGE_BATCHES = 2;
 const PIT_FIRST_BATCH_LEAD_MS = 120;
-const PIT_BACKGROUND_BATCH_DEBOUNCE_MS = 110;
+// Dynamic pages often reveal a few text nodes over several mutation callbacks.
+// Let those background-only updates settle into one turn, but never hold them
+// long enough to feel stalled.
+const PIT_BACKGROUND_BATCH_DEBOUNCE_MS = 350;
+const PIT_BACKGROUND_BATCH_MAX_WAIT_MS = 750;
+const PIT_BACKGROUND_BATCH_MIN_ITEMS = 8;
 
 async function translateBlocks(
   orderedBlocks,
@@ -443,17 +448,33 @@ function removePendingTranslationJob(job) {
   }
 }
 
-function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE_MS) {
+function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE_MS, resetTimer = true) {
   if (
     PIT_STATE.pendingQueue.size === 0 ||
-    PIT_STATE.pendingTimer !== null ||
     PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_PAGE_BATCHES
   ) {
     return;
   }
 
+  if (PIT_STATE.pendingTimer !== null) {
+    if (!resetTimer) {
+      return;
+    }
+    window.clearTimeout(PIT_STATE.pendingTimer);
+  }
+
+  const now = Date.now();
+  if (!PIT_STATE.pendingQueuedAt) {
+    PIT_STATE.pendingQueuedAt = now;
+  }
+  const elapsed = now - PIT_STATE.pendingQueuedAt;
+  const waitMs = PIT_STATE.pendingQueue.size >= PIT_BACKGROUND_BATCH_MIN_ITEMS
+    ? 0
+    : Math.min(delayMs, Math.max(0, PIT_BACKGROUND_BATCH_MAX_WAIT_MS - elapsed));
+
   PIT_STATE.pendingTimer = window.setTimeout(async () => {
     PIT_STATE.pendingTimer = null;
+    PIT_STATE.pendingQueuedAt = 0;
     if (PIT_STATE.pendingQueue.size === 0) {
       return;
     }
@@ -480,9 +501,9 @@ function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE
       if (!PIT_STATE.running && PIT_STATE.pendingDraining === 0) {
         updateFloatingState();
       }
-      schedulePendingTranslationDrain();
+      schedulePendingTranslationDrain(PIT_BACKGROUND_BATCH_DEBOUNCE_MS, false);
     }
-  }, delayMs);
+  }, waitMs);
 }
 
 async function acquireBatchRequestSlot() {
@@ -508,6 +529,7 @@ function releaseBatchRequestSlot() {
 function clearPendingTranslationQueue() {
   window.clearTimeout(PIT_STATE.pendingTimer);
   PIT_STATE.pendingTimer = null;
+  PIT_STATE.pendingQueuedAt = 0;
   PIT_STATE.pendingQueue.forEach((job) => {
     if (job.entry.translationSlot?.classList.contains("pit-translation-pending")) {
       job.entry.translationSlot.remove();

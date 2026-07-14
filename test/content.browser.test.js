@@ -112,6 +112,13 @@ test("background drains remain capped below the interactive reserve", async () =
   assert.equal(result.readySlots, 4);
 });
 
+test("small background updates use a bounded trailing merge window", async () => {
+  const result = await getBrowserSuiteResult("trailing-background-batch");
+  assert.deepEqual(result.batchSizes, [3]);
+  assert.ok(result.requestDelayMs >= 300);
+  assert.ok(result.requestDelayMs < 900);
+});
+
 test("SPA navigation cancels stale responses and translates the new route", async () => {
   const result = await getBrowserSuiteResult("spa-stale-response");
   assert.equal(result.cancelled, true);
@@ -775,6 +782,37 @@ function createHarnessHtml(routeSources, contentSources) {
         };
       }
 
+      if (name === "trailing-background-batch") {
+        setBody(
+          '<main><p>First dynamic update becomes part of one background batch.</p>' +
+          '<p>Second dynamic update becomes part of one background batch.</p>' +
+          '<p>Third dynamic update becomes part of one background batch.</p></main>'
+        );
+        const entries = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        let requestStartedAt = 0;
+        window.__pitRuntime.send = async (message) => {
+          requestStartedAt = performance.now();
+          return window.__pitDefaultSend(message);
+        };
+
+        PIT_STATE.cancelRequested = false;
+        const startedAt = performance.now();
+        enqueuePendingTranslations([entries[0]], TEST_OPTIONS, { priority: 1 });
+        schedulePendingTranslationDrain();
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+        enqueuePendingTranslations([entries[1]], TEST_OPTIONS, { priority: 1 });
+        schedulePendingTranslationDrain();
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+        enqueuePendingTranslations([entries[2]], TEST_OPTIONS, { priority: 1 });
+        schedulePendingTranslationDrain();
+        await waitFor(() => translationCalls().length === 1, 2000, "the trailing background batch");
+        await waitFor(() => !PIT_STATE.pendingDraining, 2000, "the trailing background completion");
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          requestDelayMs: Math.round(requestStartedAt - startedAt)
+        };
+      }
+
       if (name === "spa-stale-response") {
         setBody('<main><p id="old-route">Old route response must be cancelled.</p></main>');
         let release;
@@ -836,6 +874,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "pending-cache",
         "pending-set-dedupe",
         "pending-overlap",
+        "trailing-background-batch",
         "spa-stale-response"
       ]) {
         try {
