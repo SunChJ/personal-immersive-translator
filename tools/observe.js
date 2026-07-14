@@ -111,7 +111,7 @@ function printReport(metrics, evaluation) {
   const sources = metrics.sources || {};
   const latency = metrics.latencyMs || {};
 
-  console.log(`Prism metrics  ${evaluation.verdict}  uptime ${formatDuration(metrics.uptimeMs)}`);
+  console.log(`Gloss metrics  ${evaluation.verdict}  uptime ${formatDuration(metrics.uptimeMs)}`);
   console.log(`requests       ${requests.succeeded || 0}/${requests.total || 0} ok (${formatPercent(evaluation.successRate)})`);
   console.log(`latency        p50 ${formatMs(latency.p50)}  p95 ${formatMs(latency.p95)}  p99 ${formatMs(latency.p99)}  latest ${latency.percentileWindowSize ?? latency.samples ?? 0}`);
   console.log(`items          ${items.input || 0} input  ${items.unique || 0} unique`);

@@ -1,15 +1,16 @@
-const START_COMMAND = [
-  "# Run from the personal-immersive-translator repository folder.",
-  "# You can also double-click: Start Translator.command",
-  "export TRANSLATOR_BACKEND=codex-app",
-  "export CODEX_MODEL=gpt-5.3-codex-spark",
-  "npm start"
+const PAIRING_STEPS = [
+  "1. Open Gloss from the macOS menu bar.",
+  "2. In Gloss Settings, choose Show Extension.",
+  "3. Load or reload that App-managed BrowserExtension folder in Chrome.",
+  "4. Source builds only: copy and paste the pairing token from Gloss Settings.",
+  "5. Allow Chrome Local Network Access if prompted."
 ].join("\n");
 
 const fields = {
   targetLanguage: document.getElementById("targetLanguage"),
   customTargetLanguage: document.getElementById("customTargetLanguage"),
   endpoint: document.getElementById("endpoint"),
+  pairingToken: document.getElementById("pairingToken"),
   mode: document.getElementById("mode"),
   bilingualStyle: document.getElementById("bilingualStyle"),
   clearPrevious: document.getElementById("clearPrevious"),
@@ -47,6 +48,8 @@ const BILINGUAL_STYLE_LABELS = {
 const styleCards = Array.from(document.querySelectorAll(".style-card[data-style]"));
 const modeButtons = Array.from(document.querySelectorAll(".segmented [data-mode]"));
 let currentSiteHost = "";
+let healthCheckTimer;
+let healthCheckInFlight;
 
 init();
 
@@ -54,6 +57,7 @@ async function init() {
   const saved = await chrome.storage.local.get({
     targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
     endpoint: PIT_DEFAULT_ENDPOINT,
+    pairingToken: PIT_DEFAULT_PAIRING_TOKEN,
     mode: "bilingual",
     bilingualStyle: PIT_DEFAULT_BILINGUAL_STYLE,
     clearPrevious: true,
@@ -65,6 +69,7 @@ async function init() {
 
   setTargetLanguage(saved.targetLanguage);
   fields.endpoint.value = saved.endpoint;
+  fields.pairingToken.value = PIT_DEFAULT_PAIRING_TOKEN || normalizePairingToken(saved.pairingToken);
   fields.mode.value = saved.mode;
   syncModeButtons();
   fields.bilingualStyle.value = normalizeBilingualStyle(saved.bilingualStyle);
@@ -116,7 +121,7 @@ async function init() {
     });
   });
 
-  [fields.customTargetLanguage, fields.endpoint, fields.mode, fields.bilingualStyle, fields.clearPrevious, fields.viewportFirst, fields.showFloatingButton, fields.translateSelection].forEach((field) => {
+  [fields.customTargetLanguage, fields.endpoint, fields.pairingToken, fields.mode, fields.bilingualStyle, fields.clearPrevious, fields.viewportFirst, fields.showFloatingButton, fields.translateSelection].forEach((field) => {
     field.addEventListener("change", () => {
       if (field === fields.bilingualStyle) {
         syncBilingualStyleCards();
@@ -128,6 +133,10 @@ async function init() {
         updateTranslateSubtitle();
       }
       saveSettings();
+      if (field === fields.endpoint || field === fields.pairingToken) {
+        window.clearTimeout(healthCheckTimer);
+        healthCheckTimer = window.setTimeout(checkHealth, 250);
+      }
     });
     field.addEventListener("input", () => {
       if (field === fields.customTargetLanguage) {
@@ -193,15 +202,52 @@ async function syncAutoTranslateSite() {
 }
 
 async function checkHealth() {
+  if (healthCheckInFlight) {
+    return healthCheckInFlight;
+  }
+  healthCheckInFlight = performHealthCheck().finally(() => {
+    healthCheckInFlight = null;
+  });
+  return healthCheckInFlight;
+}
+
+async function performHealthCheck() {
   const endpoint = normalizeEndpoint(fields.endpoint.value);
+  const pairingToken = normalizePairingToken(fields.pairingToken.value);
+  if (!pairingToken) {
+    fields.health.dataset.ok = "false";
+    fields.health.textContent = "Pairing";
+    fields.serverPanel.dataset.ok = "false";
+    fields.serverState.textContent = "Pair with Gloss";
+    fields.latency.textContent = "--";
+    fields.offlineHelp.hidden = false;
+    fields.translate.disabled = true;
+    showPairingPanel();
+    return;
+  }
   try {
     const response = await fetchWithTimeout(`${endpoint}/health`, {
       headers: {
-        "X-PIT-Token": PIT_TOKEN
+        "X-Gloss-Token": pairingToken,
+        "X-PIT-Token": pairingToken
       }
     }, PIT_HEALTH_TIMEOUT_MS);
     const body = await response.json();
-    const ready = response.ok && body.ok !== false;
+    if (!response.ok) {
+      const pairingRequired = response.status === 401;
+      fields.health.dataset.ok = "false";
+      fields.health.textContent = pairingRequired ? "Pairing" : "Error";
+      fields.serverPanel.dataset.ok = "false";
+      fields.serverState.textContent = pairingRequired ? "Pair with Gloss" : "Gloss error";
+      fields.latency.textContent = "--";
+      fields.offlineHelp.hidden = !pairingRequired;
+      fields.translate.disabled = true;
+      if (pairingRequired) {
+        showPairingPanel();
+      }
+      return;
+    }
+    const ready = body.ok !== false;
 
     fields.health.dataset.ok = String(ready);
     fields.health.textContent = ready ? "Connected" : "Error";
@@ -214,10 +260,17 @@ async function checkHealth() {
     fields.health.dataset.ok = "false";
     fields.health.textContent = "Offline";
     fields.serverPanel.dataset.ok = "false";
-    fields.serverState.textContent = "Not running";
+    fields.serverState.textContent = "Gloss unavailable";
     fields.latency.textContent = "--";
     fields.offlineHelp.hidden = false;
     fields.translate.disabled = true;
+  }
+}
+
+function showPairingPanel() {
+  if (fields.overflow.hidden) {
+    fields.overflow.hidden = false;
+    fields.kebab.setAttribute("aria-expanded", "true");
   }
 }
 
@@ -230,7 +283,7 @@ async function translateCurrentTab() {
     const tab = await getActiveTab();
     const response = await sendToPage(tab.id, {
       type: "start-page-translation",
-      options: readSettings()
+      options: readPageSettings()
     });
 
     if (!response?.ok) {
@@ -262,6 +315,7 @@ function readSettings() {
   return {
     targetLanguage: readTargetLanguage(),
     endpoint: normalizeEndpoint(fields.endpoint.value),
+    pairingToken: normalizePairingToken(fields.pairingToken.value),
     mode: fields.mode.value,
     bilingualStyle: normalizeBilingualStyle(fields.bilingualStyle.value),
     clearPrevious: fields.clearPrevious.checked,
@@ -272,6 +326,11 @@ function readSettings() {
     batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   };
+}
+
+function readPageSettings() {
+  const { pairingToken: _pairingToken, ...settings } = readSettings();
+  return settings;
 }
 
 function setTargetLanguage(value) {
@@ -355,11 +414,14 @@ async function sendToPage(tabId, message) {
 }
 
 async function copyStartCommand() {
-  await navigator.clipboard.writeText(START_COMMAND);
-  setStatus("Start command copied.");
+  await navigator.clipboard.writeText(PAIRING_STEPS);
+  setStatus("Pairing steps copied.");
 }
 
 function serverLabel(body) {
+  if (body.name === "Gloss") {
+    return "Gloss · Codex ready";
+  }
   if (body.warm === false) {
     return `${prettyModelLabel(body.model, "Codex bridge")} warming`;
   }
@@ -384,7 +446,10 @@ function targetLanguageLabel() {
 function friendlyError(error) {
   const text = error instanceof Error ? error.message : String(error);
   if (text.includes("Failed to fetch") || text.includes("Proxy offline")) {
-    return "Local server is not running.";
+    return "Gloss is unreachable. Open it and allow Chrome Local Network Access.";
+  }
+  if (text.includes("pairing") || text.includes("Unauthorized")) {
+    return "Pair this extension from Gloss Settings.";
   }
   if (text.includes("Cannot access") || text.includes("chrome://")) {
     return "Chrome does not allow translating this page.";

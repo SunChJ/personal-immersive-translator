@@ -204,20 +204,28 @@ async function translateBlocks(
     }
 
     setFloatingStatus(`${overlayPrefix} ${processedItems + 1}-${processedItems + batch.length} / ${orderedBlocks.length}`);
-    const responsePromise = chrome.runtime.sendMessage({
-      type: "translate-batch",
-      items: batch.map((entry, index) => ({
-        id: entry.id,
-        index,
-        text: entry.text
-      })),
-      targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
-      endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
-      sourceUrl
-    });
     prepareStableTranslationSurfaces(batch, mode, bilingualStyle);
 
-    const response = await responsePromise;
+    await acquireBatchRequestSlot();
+    let response;
+    try {
+      if (PIT_STATE.cancelRequested || translationEpoch !== PIT_STATE.translationEpoch) {
+        return false;
+      }
+      response = await chrome.runtime.sendMessage({
+        type: "translate-batch",
+        items: batch.map((entry, index) => ({
+          id: entry.id,
+          index,
+          text: entry.text
+        })),
+        targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
+        endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
+        sourceUrl
+      });
+    } finally {
+      releaseBatchRequestSlot();
+    }
     if (location.href !== sourceUrl) {
       handlePossibleRouteChange(options);
     }
@@ -313,16 +321,12 @@ function enqueuePendingTranslations(entries, options, { force = false, priority 
 }
 
 async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.translationEpoch, overlayPrefix = "Translating") {
-  if (PIT_STATE.pendingDraining) {
-    return 0;
-  }
-
   const { cached, jobs } = takePendingTranslationJobs(translationEpoch);
   if (jobs.length === 0) {
     return cached;
   }
 
-  PIT_STATE.pendingDraining = true;
+  PIT_STATE.pendingDraining += 1;
   try {
     const translated = await translateBlocks(
       jobs.map((job) => job.entry),
@@ -333,7 +337,7 @@ async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.transla
     return cached + translated;
   } finally {
     jobs.forEach((job) => PIT_STATE.pendingIds.delete(job.entry.id));
-    PIT_STATE.pendingDraining = false;
+    PIT_STATE.pendingDraining = Math.max(0, PIT_STATE.pendingDraining - 1);
   }
 }
 
@@ -395,19 +399,27 @@ function removePendingTranslationJob(job) {
 }
 
 function schedulePendingTranslationDrain() {
-  if (PIT_STATE.running || PIT_STATE.pendingDraining || PIT_STATE.pendingQueue.size === 0) {
+  if (
+    PIT_STATE.pendingQueue.size === 0 ||
+    PIT_STATE.pendingTimer !== null ||
+    PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_BATCHES
+  ) {
     return;
   }
 
-  window.clearTimeout(PIT_STATE.pendingTimer);
   PIT_STATE.pendingTimer = window.setTimeout(async () => {
     PIT_STATE.pendingTimer = null;
-    if (PIT_STATE.running || PIT_STATE.pendingDraining) {
+    if (PIT_STATE.pendingQueue.size === 0) {
       return;
     }
 
-    PIT_STATE.running = true;
-    PIT_STATE.cancelRequested = false;
+    const ownsRunningState = !PIT_STATE.running;
+    if (ownsRunningState) {
+      PIT_STATE.running = true;
+      PIT_STATE.cancelRequested = false;
+    } else if (PIT_STATE.cancelRequested) {
+      return;
+    }
     updateFloatingState("running");
     try {
       const translated = await flushPendingTranslationQueue(PIT_STATE.translationEpoch, "Updating");
@@ -417,11 +429,35 @@ function schedulePendingTranslationDrain() {
     } catch (error) {
       setFloatingStatus("Update failed");
     } finally {
-      PIT_STATE.running = false;
-      updateFloatingState();
+      if (ownsRunningState) {
+        PIT_STATE.running = false;
+      }
+      if (!PIT_STATE.running && PIT_STATE.pendingDraining === 0) {
+        updateFloatingState();
+      }
       schedulePendingTranslationDrain();
     }
   }, 0);
+}
+
+async function acquireBatchRequestSlot() {
+  if (PIT_STATE.activeBatchRequests < PIT_MAX_CONCURRENT_BATCHES) {
+    PIT_STATE.activeBatchRequests += 1;
+    return;
+  }
+
+  await new Promise((resolve) => {
+    PIT_STATE.batchRequestWaiters.push(resolve);
+  });
+}
+
+function releaseBatchRequestSlot() {
+  const next = PIT_STATE.batchRequestWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  PIT_STATE.activeBatchRequests = Math.max(0, PIT_STATE.activeBatchRequests - 1);
 }
 
 function clearPendingTranslationQueue() {

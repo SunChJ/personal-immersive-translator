@@ -555,6 +555,16 @@ select {
   margin: 0;
 }
 
+.stacked-field + .stacked-field {
+  margin-top: 10px;
+}
+
+.pairing-hint {
+  margin-top: 6px;
+  color: var(--pit-faint);
+  font-size: 11px;
+}
+
 .checkbox {
   display: flex;
   align-items: center;

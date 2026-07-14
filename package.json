@@ -1,8 +1,8 @@
 {
-  "name": "personal-immersive-translator",
-  "version": "0.2.15",
+  "name": "gloss-browser-extension",
+  "version": "0.3.4",
   "private": true,
-  "description": "A personal Chrome extension for translating the current page through a local OpenAI proxy.",
+  "description": "The Gloss browser extension for immersive page translation through the Gloss macOS app.",
   "scripts": {
     "check:version": "node scripts/check-version.js",
     "check:scripts": "for file in extension/*.js server/*.js tools/*.js tools/perf/*.js test/*.js; do node --check \"$file\" || exit 1; done",

@@ -1,10 +1,10 @@
-# Personal Immersive Translator
+# Gloss 浏览器扩展
 
-> 一个本地优先的 Chrome 页面翻译插件，通过已登录的 Codex CLI 使用 GPT-5.3-Codex-Spark。
+> 由 Gloss macOS App 与现有 Codex 登录驱动的沉浸式网页翻译扩展。
 
 [English README](./README.md) · [Changelog](./CHANGELOG.md)
 
-Personal Immersive Translator 是一个个人版页面翻译插件。Chrome 插件只负责采集页面文本和回填译文；真正的模型调用交给本机 Node.js server。默认情况下，server 会常驻一个 Codex app-server，并复用你已经通过 ChatGPT 登录的 Codex 会话。
+Gloss 扩展为 Chrome 提供整页、划词、双语和替换式翻译。模型调用统一交给原生 Gloss App，因此不再需要保持终端服务运行，Chrome 也不会接触 ChatGPT 凭据。
 
 ## 功能
 
@@ -20,24 +20,24 @@ Personal Immersive Translator 是一个个人版页面翻译插件。Chrome 插�
 - 相同全文只请求一次，并把译文准确回填到每个 DOM 位置。
 - 替换模式不会销毁原始链接和行内节点，清除后可完整恢复。
 - 本地翻译缓存，重复文本几乎瞬时返回。
-- 默认使用已登录的 Codex CLI，也支持 OpenAI API 后端。
+- 与 Gloss 原生端共享翻译代理、缓存和已登录的 Codex 会话。
 
 ## 架构
 
 ```text
 Chrome extension
-  -> 本地 server: http://127.0.0.1:8787
-    -> 常驻 Codex app-server
-      -> gpt-5.3-codex-spark
+  -> 已鉴权的回环桥接：http://127.0.0.1:8787
+    -> Gloss TranslationBroker
+      -> Codex app-server
 ```
 
-插件不会保存 API key 或 ChatGPT token。它只连接本机 server；server 在你的机器上管理 Codex 进程。
+Gloss 会在私有 App 存储中生成随机的 256 位配对令牌，并自动写入由 App 管理的扩展副本；令牌文件与生成配置权限均为 `0600`。桥接只监听 `127.0.0.1`，仅允许 Chrome 扩展来源，并且不会向 Chrome 暴露 ChatGPT 凭据。
 
 ## 环境要求
 
 - macOS
 - Chrome
-- Node.js 18+
+- Gloss
 - 已登录 ChatGPT 的 Codex CLI：
 
 ```bash
@@ -47,30 +47,32 @@ codex login status
 
 ## 快速开始
 
-双击：
+从仓库根目录构建并打开 Gloss：
 
-```text
-Start Translator.command
+```bash
+cd Gloss
+./Scripts/build_app.sh
+open dist/Gloss.app
 ```
 
-或者手动运行：
+然后打开 **Gloss 设置 → 浏览器扩展**。用**显示扩展**找到由 App 管理且已自动配对的扩展目录。
+
+只有运行扩展开发检查时才需要 Node.js 18+：
 
 ```bash
 cd /path/to/personal-immersive-translator
-npm run doctor
-npm run start:codex
+npm run verify
 ```
-
-翻译时保持这个终端窗口打开。
 
 ## 加载 Chrome 插件
 
-1. 打开 `chrome://extensions`。
-2. 打开 Developer mode。
-3. 点击 Load unpacked。
-4. 选择 `extension/` 文件夹。
-5. 打开普通网页。
-6. 使用页面里的悬浮球，或点击扩展 popup 进行翻译。
+1. 在 Gloss 设置中点击**显示扩展**。
+2. 打开 `chrome://extensions`，启用 Developer mode。
+3. 点击 **Load unpacked**，选择 Finder 中显示的 `BrowserExtension` 文件夹。
+4. 如果 Chrome 请求**本地网络访问**，请选择允许；扩展需要借此连接 `127.0.0.1` 上的 Gloss。
+5. 使用页面悬浮球或扩展 popup 翻译。
+
+开发扩展源码时，改为加载本仓库的 `extension/` 文件夹，并在扩展设置中粘贴 Gloss 提供的配对令牌。
 
 `chrome://extensions` 这类浏览器内部页面无法翻译，这是 Chrome 对 content script 的限制。
 
@@ -83,18 +85,22 @@ npm run start:codex
 - 右键点击会打开悬浮菜单，包含 server 状态、目标语言、模式和快捷操作。
 - 如果隐藏了悬浮球，可以在扩展 popup 中打开 `Advanced -> Show floating button`。
 
-## 配置
+## 翻译设置
 
 扩展 popup 内置常用目标语言，例如中文、英文、日文、韩文、法文、德文、西班牙文、葡萄牙文、意大利文、俄文、阿拉伯文、印地文、越南文、泰文和印尼文。选择 `Custom...` 后可以输入任何其他目标语言或地区变体，例如 `Dutch` 或 `Brazilian Portuguese`。
 
-默认后端是常驻 Codex app-server：
+后端和模型生命周期由 Gloss 统一管理。浏览器扩展只保存页面显示偏好、回环地址与每机配对令牌。
+
+## 旧版 Node 服务
+
+现有 Node 服务继续作为开发与兼容性测试工具保留，但 Gloss 产品路径不再依赖它：
 
 ```bash
 export TRANSLATOR_BACKEND="codex-app"
 export CODEX_MODEL="gpt-5.3-codex-spark"
 ```
 
-其他后端：
+其他旧版后端：
 
 ```bash
 # 兼容模式。每个批次都会启动一次 codex exec，速度较慢。
@@ -137,7 +143,7 @@ npm run start:api
 npm run verify
 ```
 
-它依次执行版本检查、纯逻辑单元测试、真实 Chrome DOM 注入测试、server 集成测试，以及并发压力 smoke test。也可以分开运行：
+它依次执行版本检查、纯逻辑单元测试、真实 Chrome DOM 注入测试、真实扩展/service worker 回环链路测试、server 集成测试，以及并发压力 smoke test。也可以分开运行：
 
 ```bash
 npm run test:unit

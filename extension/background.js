@@ -1,4 +1,4 @@
-importScripts("shared.js");
+importScripts("gloss-config.js", "shared.js");
 
 const TRANSLATE_TIMEOUT_MS = 135000;
 const AUTO_TRANSLATE_DELAY_MS = 700;
@@ -45,11 +45,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 async function translateBatch(message) {
   const endpoint = normalizeEndpoint(message.endpoint);
+  const pairingToken = await readPairingToken();
   const response = await fetchWithTimeout(`${endpoint}/translate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-PIT-Token": PIT_TOKEN
+      ...authHeaders(pairingToken)
     },
     body: JSON.stringify({
       items: message.items,
@@ -80,10 +81,9 @@ async function translateBatch(message) {
 
 async function checkHealth(message) {
   const endpoint = normalizeEndpoint(message.endpoint);
+  const pairingToken = await readPairingToken();
   const response = await fetchWithTimeout(`${endpoint}/health`, {
-    headers: {
-      "X-PIT-Token": PIT_TOKEN
-    }
+    headers: authHeaders(pairingToken)
   }, PIT_HEALTH_TIMEOUT_MS);
   const body = await response.json();
   if (!response.ok) {
@@ -205,6 +205,26 @@ function defaultTranslationSettings() {
     showFloatingButton: true,
     translateSelection: true,
     autoTranslateSites: {}
+  };
+}
+
+async function readPairingToken() {
+  if (PIT_DEFAULT_PAIRING_TOKEN) {
+    return PIT_DEFAULT_PAIRING_TOKEN;
+  }
+  const settings = await chrome.storage.local.get({
+    pairingToken: PIT_DEFAULT_PAIRING_TOKEN
+  });
+  return normalizePairingToken(settings.pairingToken);
+}
+
+function authHeaders(pairingToken) {
+  if (!pairingToken) {
+    return {};
+  }
+  return {
+    "X-Gloss-Token": pairingToken,
+    "X-PIT-Token": pairingToken
   };
 }
 

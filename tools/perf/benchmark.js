@@ -698,7 +698,7 @@ function writeResult(file, result) {
 
 function printRunResult(result, output) {
   const latency = result.timing.latencyMs;
-  console.log("PIT deterministic performance run");
+  console.log("Gloss deterministic performance run");
   console.log(`  load       ${result.config.requests} requests x ${result.config.items} items @ concurrency ${result.config.concurrency}`);
   console.log(`  latency    p50 ${latency.p50} ms | p95 ${latency.p95} ms | p99 ${latency.p99} ms`);
   console.log(`  throughput ${result.timing.throughputRps} req/s | ${result.timing.itemThroughputPerSecond} items/s`);

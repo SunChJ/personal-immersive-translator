@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.4 - 2026-07-14
+
+- Let newly visible and dynamic translation batches start without waiting for an earlier queue drain to finish.
+- Bounded all browser-to-Gloss translation requests to three concurrent batches, matching the three prewarmed Codex threads.
+
+## 0.3.3 - 2026-07-14
+
+- Updated the bundled page translation runtime from PIT 0.2.12 to 0.2.15.
+- Adopted the unified deduplicated pending queue, per-page result cache, refresh deduplication, and simplified pending indicator.
+- Preserved Gloss automatic pairing, per-install authentication, and App-managed extension installation.
+
+## 0.3.2 - 2026-07-14
+
+- Fixed upgrades from the original extension losing all bridge access because no pairing token existed in Chrome storage.
+- Made Gloss inject its per-install random token into the App-managed extension copy, preserving authenticated loopback access without manual copy and paste.
+- Kept manual pairing available for developers who load the repository's source extension directly.
+
+## 0.3.1 - 2026-07-13
+
+- Fixed Chrome loopback access by using valid host-permission match patterns for `127.0.0.1` and `localhost`.
+- Removed a duplicate hard-coded endpoint so every extension surface uses the shared Gloss bridge address.
+- Added a real loaded-extension test covering the content script, Manifest V3 service worker, loopback bridge, and translated DOM output.
+- Improved setup guidance for the bundled extension and Chrome's Local Network Access permission.
+
+## 0.3.0 - 2026-07-13
+
+- Renamed the product to Gloss and aligned the browser extension with the new macOS app.
+- Replaced the shared fixed local-service token with a per-install token in Gloss's private app storage.
+- Added pairing controls and Gloss-specific connection status while preserving the existing page translation runtime.
+
 ## 0.2.15 - 2026-07-12
 
 - Added one deduplicated pending queue for initial scans, viewport lazy loading, dynamic updates, and retries. Visible deferred content now shows its spinner immediately and is prioritized after the active batch completes.

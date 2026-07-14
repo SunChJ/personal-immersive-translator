@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Prism — Immersive Translator</title>
+    <title>Gloss — Immersive Translator</title>
     <link rel="stylesheet" href="popup.css">
   </head>
   <body>
@@ -11,9 +11,10 @@
       <header class="popup-header">
         <div class="brand">
           <svg class="brand-mark" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 4 L20 19 L4 19 Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="rgba(42,111,219,0.12)"/>
+            <path d="M4.5 5.5c3.1 0 5.6.8 7.5 2.5 1.9-1.7 4.4-2.5 7.5-2.5v12.7c-3.1 0-5.6.7-7.5 2.3-1.9-1.6-4.4-2.3-7.5-2.3V5.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="rgba(42,111,219,0.10)"/>
+            <path d="M12 8v12" stroke="currentColor" stroke-width="1.8"/>
           </svg>
-          <h1>Prism</h1>
+          <h1>Gloss</h1>
         </div>
         <button id="kebab" class="kebab" type="button" aria-label="More settings" aria-expanded="false">
           <span></span><span></span><span></span>
@@ -144,9 +145,14 @@
 
       <section id="overflow" class="overflow" hidden>
         <label class="stacked-field">
-          <span>Local server</span>
+          <span>Gloss App</span>
           <input id="endpoint" value="http://127.0.0.1:8787" autocomplete="off">
         </label>
+        <label class="stacked-field">
+          <span>Pairing token</span>
+          <input id="pairingToken" type="password" placeholder="Copy from Gloss Settings" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="pairing-hint">The App-managed extension pairs automatically. Source builds can use a copied token.</p>
         <div class="overflow-meta"><span>Latency</span><span id="latency" class="meta">--</span></div>
         <label class="checkbox">
           <input id="clearPrevious" type="checkbox" checked>
@@ -161,14 +167,15 @@
           <button id="recheck" class="secondary">Recheck</button>
         </div>
         <div id="offlineHelp" class="offline" hidden>
-          <p>Start the local server from this repository, then recheck.</p>
-          <button id="copyCommand" class="secondary">Copy start command</button>
+          <p>Open Gloss and reload its App-managed extension. Source builds require a copied token.</p>
+          <button id="copyCommand" class="secondary">Copy pairing steps</button>
         </div>
       </section>
 
       <p id="status" role="status"></p>
     </main>
 
+    <script src="gloss-config.js"></script>
     <script src="shared.js"></script>
     <script src="popup.js"></script>
   </body>
