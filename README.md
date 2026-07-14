@@ -4,11 +4,11 @@
 
 [中文文档](./README.zh-CN.md) · [Changelog](./CHANGELOG.md)
 
-The Gloss extension adds page, selection, bilingual, and replace-mode translation to Chrome. Translation runs through the native Gloss app, so Chrome never receives a ChatGPT credential and no terminal service needs to stay open.
+The Gloss extension adds page, selection, bilingual, and replace-mode translation to Chrome and Safari. Translation runs through the native Gloss app, so the browser never receives a ChatGPT credential and no terminal service needs to stay open.
 
 ## Features
 
-- Translate the current page from a Chrome extension.
+- Translate the current page in Chrome or Safari from one WXT codebase.
 - Choose a common target language or enter any custom language name.
 - Floating draggable translate button with quick actions.
 - Snap the floating button to the left or right edge of the page.
@@ -25,19 +25,20 @@ The Gloss extension adds page, selection, bilingual, and replace-mode translatio
 ## Architecture
 
 ```text
-Chrome extension
+Chrome or Safari extension
   -> authenticated loopback bridge at http://127.0.0.1:8787
     -> Gloss TranslationBroker
       -> Codex app-server
 ```
 
-Gloss creates a random 256-bit pairing token and injects it into the App-managed extension copy; both the source token and generated configuration use `0600` permissions. The bridge listens only on `127.0.0.1`, accepts Chrome-extension origins, and never exposes a ChatGPT credential to Chrome.
+Gloss creates a random 256-bit pairing token. Chrome receives it in the App-managed extension copy; Safari obtains it from the signed native extension through a shared App Group. The bridge listens only on `127.0.0.1`, accepts Chrome and Safari extension origins, and never exposes a ChatGPT credential to either browser.
 
 ## Requirements
 
 - macOS
-- Chrome
+- Chrome or Safari
 - Gloss
+- Node.js 20.12+ for extension builds
 - Codex CLI logged in with ChatGPT:
 
 ```bash
@@ -55,9 +56,9 @@ cd Gloss
 open dist/Gloss.app
 ```
 
-Then open **Gloss Settings → Browser Extension**. Use **Show Extension** to reveal the App-managed, automatically paired extension folder.
+The build runs WXT in the `personal-immersive-translator` dependency, bundles the Chrome output, and embeds the Safari extension. Open **Gloss Settings → Browser Extension** afterward.
 
-For extension development, Node.js 18+ is only required to run checks:
+For extension development:
 
 ```bash
 cd /path/to/personal-immersive-translator
@@ -72,9 +73,17 @@ npm run verify
 4. Allow Chrome **Local Network Access** if prompted; it is required to reach Gloss on `127.0.0.1`.
 5. Use the floating button or extension popup to translate.
 
-For source development, load this repository's `extension/` folder instead and paste the token from Gloss Settings into the extension.
+For source development, run `npm run build:chrome`, load `.output/chrome-mv3`, and paste the token from Gloss Settings into the extension.
 
 Chrome internal pages such as `chrome://extensions` cannot be translated because Chrome blocks content scripts there.
+
+## Enable the Safari Extension
+
+1. Build and open `Gloss.app`.
+2. In Gloss Settings, click **Safari Settings**.
+3. Enable **Gloss Extension** in Safari and grant website access when requested.
+
+For extension-only development, run `npm run build:safari` and open `safari/Gloss/Gloss.xcodeproj`. The Xcode project references `.output/safari-mv3`; WXT remains the single source for browser code and manifests.
 
 ## Floating Button
 
@@ -190,7 +199,7 @@ A one-shot observation exits non-zero when its verdict is `FAIL`. `GET /metrics`
 
 ## Versioning
 
-The project uses semver. Keep `package.json`, `extension/manifest.json`, and `CHANGELOG.md` in sync for every release. Run `npm run check:version` before pushing a release-oriented change.
+The project uses semver. Keep `package.json`, `wxt.config.ts`, and `CHANGELOG.md` in sync for every release. WXT generates both manifests. Run `npm run check:version` before pushing a release-oriented change.
 
 ## Notes
 

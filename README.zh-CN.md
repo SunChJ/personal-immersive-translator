@@ -4,11 +4,11 @@
 
 [English README](./README.md) · [Changelog](./CHANGELOG.md)
 
-Gloss 扩展为 Chrome 提供整页、划词、双语和替换式翻译。模型调用统一交给原生 Gloss App，因此不再需要保持终端服务运行，Chrome 也不会接触 ChatGPT 凭据。
+Gloss 扩展通过同一套 WXT 代码为 Chrome 和 Safari 提供整页、划词、双语和替换式翻译。模型调用统一交给原生 Gloss App，因此不再需要保持终端服务运行，浏览器也不会接触 ChatGPT 凭据。
 
 ## 功能
 
-- 翻译当前 Chrome 页面。
+- 在 Chrome 或 Safari 中翻译当前页面。
 - 可以选择常用目标语言，也可以输入任意自定义语言。
 - 页面内悬浮翻译按钮，支持快捷操作。
 - 悬浮球可拖动，并自动吸附到页面左右边缘。
@@ -25,19 +25,20 @@ Gloss 扩展为 Chrome 提供整页、划词、双语和替换式翻译。模型
 ## 架构
 
 ```text
-Chrome extension
+Chrome 或 Safari extension
   -> 已鉴权的回环桥接：http://127.0.0.1:8787
     -> Gloss TranslationBroker
       -> Codex app-server
 ```
 
-Gloss 会在私有 App 存储中生成随机的 256 位配对令牌，并自动写入由 App 管理的扩展副本；令牌文件与生成配置权限均为 `0600`。桥接只监听 `127.0.0.1`，仅允许 Chrome 扩展来源，并且不会向 Chrome 暴露 ChatGPT 凭据。
+Gloss 会在私有 App 存储中生成随机的 256 位配对令牌。Chrome 从 App 管理的扩展副本读取；Safari 通过签名的原生扩展和 App Group 获取。桥接只监听 `127.0.0.1`，仅允许 Chrome 与 Safari 扩展来源，并且不会向浏览器暴露 ChatGPT 凭据。
 
 ## 环境要求
 
 - macOS
-- Chrome
+- Chrome 或 Safari
 - Gloss
+- Node.js 20.12+（构建扩展时）
 - 已登录 ChatGPT 的 Codex CLI：
 
 ```bash
@@ -55,9 +56,9 @@ cd Gloss
 open dist/Gloss.app
 ```
 
-然后打开 **Gloss 设置 → 浏览器扩展**。用**显示扩展**找到由 App 管理且已自动配对的扩展目录。
+构建脚本会在 `personal-immersive-translator` 依赖仓库中运行 WXT，打包 Chrome 产物并嵌入 Safari 扩展。完成后打开 **Gloss 设置 → 浏览器扩展**。
 
-只有运行扩展开发检查时才需要 Node.js 18+：
+扩展开发命令：
 
 ```bash
 cd /path/to/personal-immersive-translator
@@ -72,9 +73,17 @@ npm run verify
 4. 如果 Chrome 请求**本地网络访问**，请选择允许；扩展需要借此连接 `127.0.0.1` 上的 Gloss。
 5. 使用页面悬浮球或扩展 popup 翻译。
 
-开发扩展源码时，改为加载本仓库的 `extension/` 文件夹，并在扩展设置中粘贴 Gloss 提供的配对令牌。
+开发扩展源码时，运行 `npm run build:chrome`，加载 `.output/chrome-mv3`，并在扩展设置中粘贴 Gloss 提供的配对令牌。
 
 `chrome://extensions` 这类浏览器内部页面无法翻译，这是 Chrome 对 content script 的限制。
+
+## 启用 Safari 扩展
+
+1. 构建并打开 `Gloss.app`。
+2. 在 Gloss 设置中点击 **Safari 设置**。
+3. 在 Safari 中启用 **Gloss Extension**，并按提示授予网页访问权限。
+
+只开发扩展时，可运行 `npm run build:safari`，再打开 `safari/Gloss/Gloss.xcodeproj`。Xcode 工程直接引用 `.output/safari-mv3`；浏览器代码和 manifest 仍以 WXT 为唯一来源。
 
 ## 悬浮球
 
@@ -190,7 +199,7 @@ npm run observe -- --reset
 
 ## 版本管理
 
-项目使用 semver。每次面向 release 的变更，都需要同步 `package.json`、`extension/manifest.json` 和 `CHANGELOG.md`。推送前运行 `npm run check:version`。
+项目使用 semver。每次面向 release 的变更，都需要同步 `package.json`、`wxt.config.ts` 和 `CHANGELOG.md`；Chrome 与 Safari manifest 均由 WXT 生成。推送前运行 `npm run check:version`。
 
 ## 说明
 

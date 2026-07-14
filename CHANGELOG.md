@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 - 2026-07-14
+
+- Added WXT as the shared Chrome and Safari build layer while preserving the existing extension runtime.
+- Added browser-specific Manifest V3 outputs as the stable dependency consumed by Gloss packaging.
+- Added a Safari Web Extension target with native App Group pairing and a polling fallback for SPA navigation.
+- Added browser icons, target-specific manifest coverage, and automated Chrome/Safari build verification.
+
 ## 0.3.4 - 2026-07-14
 
 - Let newly visible and dynamic translation batches start without waiting for an earlier queue drain to finish.

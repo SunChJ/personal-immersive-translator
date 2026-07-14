@@ -10,6 +10,7 @@ const PIT_STATE = {
   dynamicRouteUrl: location.href,
   routeSettlingTimers: [],
   routeEventHandler: null,
+  routePollTimer: null,
   routeTranslationTimer: null,
   routeUpdatePending: false,
   floating: null,

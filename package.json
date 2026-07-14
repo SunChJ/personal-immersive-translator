@@ -1,18 +1,21 @@
 {
   "name": "gloss-browser-extension",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "private": true,
   "description": "The Gloss browser extension for immersive page translation through the Gloss macOS app.",
   "scripts": {
+    "build": "npm run build:chrome && npm run build:safari",
+    "build:chrome": "wxt build -b chrome --mv3",
+    "build:safari": "wxt build -b safari --mv3",
     "check:version": "node scripts/check-version.js",
-    "check:scripts": "for file in extension/*.js server/*.js tools/*.js tools/perf/*.js test/*.js; do node --check \"$file\" || exit 1; done",
+    "check:scripts": "for file in extension/*.js scripts/*.js server/*.js tools/*.js tools/perf/*.js test/*.js; do node --check \"$file\" || exit 1; done",
     "doctor": "node scripts/doctor.js",
-    "test": "node --test test/*.test.js",
+    "test": "npm run build && node --test test/*.test.js",
     "test:unit": "node --test test/perf.unit.test.js test/observe.test.js",
-    "test:batch": "node --test test/content.browser.test.js",
+    "test:batch": "npm run build:chrome && node --test test/content.browser.test.js",
     "test:server": "node --test test/server.integration.test.js test/server.metrics.test.js",
     "test:stress": "node tools/perf/benchmark.js run --requests 80 --concurrency 16 --items 20 --unique-ratio 0.25 --delay-ms 10 --min-backend-savings-pct 70",
-    "verify": "npm run check:version && npm run check:scripts && npm test && npm run test:stress",
+    "verify": "npm run build && npm run check:version && npm run check:scripts && node --test test/*.test.js && npm run test:stress",
     "perf": "node tools/perf/benchmark.js run",
     "perf:compare": "node tools/perf/benchmark.js compare",
     "perf:hyperfine": "mkdir -p artifacts/perf && hyperfine --warmup 1 --runs 10 --export-json artifacts/perf/hyperfine.json 'node tools/perf/benchmark.js run --requests 100 --concurrency 16 --items 20 --unique-ratio 0.25 --delay-ms 25 --json >/dev/null'",
@@ -22,6 +25,9 @@
     "start:api": "TRANSLATOR_BACKEND=openai node server/server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.12"
+  },
+  "devDependencies": {
+    "wxt": "0.20.27"
   }
 }

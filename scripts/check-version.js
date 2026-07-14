@@ -5,7 +5,10 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const packageJson = readJson(path.join(root, "package.json"));
-const manifestJson = readJson(path.join(root, "extension", "manifest.json"));
+const manifests = ["chrome-mv3", "safari-mv3"].map((target) => ({
+  target,
+  value: readJson(path.join(root, ".output", target, "manifest.json"))
+}));
 const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
 
 const version = packageJson.version;
@@ -14,9 +17,11 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
   fail(`package.json version must use x.y.z semver, got ${version}`);
 }
 
-if (manifestJson.version !== version) {
-  fail(`manifest version ${manifestJson.version} does not match package version ${version}`);
-}
+manifests.forEach(({ target, value }) => {
+  if (value.version !== version) {
+    fail(`${target} manifest version ${value.version} does not match package version ${version}`);
+  }
+});
 
 if (!changelog.includes(`## ${version} - `)) {
   fail(`CHANGELOG.md is missing an entry for ${version}`);
