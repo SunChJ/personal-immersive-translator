@@ -115,8 +115,8 @@ test("background drains remain capped below the interactive reserve", async () =
 test("small background updates use a bounded trailing merge window", async () => {
   const result = await getBrowserSuiteResult("trailing-background-batch");
   assert.deepEqual(result.batchSizes, [3]);
-  assert.ok(result.requestDelayMs >= 300);
-  assert.ok(result.requestDelayMs < 900);
+  assert.ok(result.requestDelayMs >= 750);
+  assert.ok(result.requestDelayMs < 1_350);
 });
 
 test("SPA navigation cancels stale responses and translates the new route", async () => {

@@ -188,8 +188,8 @@ const PIT_FIRST_BATCH_LEAD_MS = 120;
 // Dynamic pages often reveal a few text nodes over several mutation callbacks.
 // Let those background-only updates settle into one turn, but never hold them
 // long enough to feel stalled.
-const PIT_BACKGROUND_BATCH_DEBOUNCE_MS = 350;
-const PIT_BACKGROUND_BATCH_MAX_WAIT_MS = 750;
+const PIT_BACKGROUND_BATCH_DEBOUNCE_MS = 600;
+const PIT_BACKGROUND_BATCH_MAX_WAIT_MS = 1200;
 const PIT_BACKGROUND_BATCH_MIN_ITEMS = 8;
 
 async function translateBlocks(
