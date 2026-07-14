@@ -56,6 +56,7 @@ async function translateBatch(message) {
       items: message.items,
       texts: message.texts,
       targetLanguage: message.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
+      priority: normalizeTranslationPriority(message.priority),
       sourceUrl: message.sourceUrl || ""
     })
   }, TRANSLATE_TIMEOUT_MS);

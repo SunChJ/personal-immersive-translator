@@ -56,7 +56,15 @@ async function translatePage(options) {
       priority: 2,
       translationEpoch
     });
-    const translated = pending.cached + await flushPendingTranslationQueue(translationEpoch, "Translating");
+    const translated = pending.cached + await flushPendingTranslationQueue(
+      translationEpoch,
+      "Translating",
+      {
+        firstBatchPriority: "visible",
+        remainingBatchPriority: "background",
+        firstBatchLeadMs: PIT_FIRST_BATCH_LEAD_MS
+      }
+    );
 
     if (location.href !== PIT_STATE.dynamicRouteUrl) {
       handlePossibleRouteChange(options);
@@ -173,16 +181,22 @@ function takeTranslationBatch(entries, offset, maxItems, maxChars) {
   return batch;
 }
 
-// The small fast-first batch is awaited before the remaining batches fan out.
-// That keeps first-screen latency low while still using bounded concurrency for
-// the long-page tail. The server applies the same limit to isolated Codex turns.
-const PIT_MAX_CONCURRENT_BATCHES = 3;
+// Page work owns at most two native turns. The third stays free for an explicit
+// selection translation or another foreground interaction.
+const PIT_MAX_CONCURRENT_PAGE_BATCHES = 2;
+const PIT_FIRST_BATCH_LEAD_MS = 120;
+const PIT_BACKGROUND_BATCH_DEBOUNCE_MS = 110;
 
 async function translateBlocks(
   orderedBlocks,
   options,
   overlayPrefix = "Translating",
-  translationEpoch = PIT_STATE.translationEpoch
+  translationEpoch = PIT_STATE.translationEpoch,
+  {
+    firstBatchPriority = "visible",
+    remainingBatchPriority = "background",
+    firstBatchLeadMs = PIT_FIRST_BATCH_LEAD_MS
+  } = {}
 ) {
   const maxBatchItems = clamp(Number(options.batchSize || PIT_MAX_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
   const maxBatchChars = clamp(Number(options.batchCharLimit || PIT_DEFAULT_BATCH_CHAR_LIMIT), PIT_MIN_BATCH_CHAR_LIMIT, PIT_MAX_BATCH_CHAR_LIMIT);
@@ -195,7 +209,7 @@ async function translateBlocks(
   let firstError = null;
   let nextBatchIndex = 0;
 
-  async function sendBatch(batch) {
+  async function sendBatch(batch, priority) {
     if (location.href !== sourceUrl) {
       handlePossibleRouteChange(options);
     }
@@ -221,6 +235,7 @@ async function translateBlocks(
         })),
         targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
+        priority: normalizeTranslationPriority(priority),
         sourceUrl
       });
     } finally {
@@ -244,7 +259,7 @@ async function translateBlocks(
     return true;
   }
 
-  async function worker() {
+  async function worker(priority) {
     while (nextBatchIndex < batches.length) {
       if (PIT_STATE.cancelRequested || firstError) {
         return;
@@ -254,7 +269,7 @@ async function translateBlocks(
       nextBatchIndex += 1;
 
       try {
-        if (!await sendBatch(batch)) {
+        if (!await sendBatch(batch, priority)) {
           return;
         }
       } catch (error) {
@@ -266,16 +281,37 @@ async function translateBlocks(
 
   if (batches.length > 0) {
     nextBatchIndex = 1;
-    try {
-      await sendBatch(batches[0]);
-    } catch (error) {
-      firstError = error;
-    }
-  }
+    let firstBatchFinished = false;
+    const firstWorker = (async () => {
+      try {
+        await sendBatch(batches[0], firstBatchPriority);
+      } catch (error) {
+        firstError = firstError || error;
+      } finally {
+        firstBatchFinished = true;
+      }
+    })();
 
-  if (!firstError && !PIT_STATE.cancelRequested && translationEpoch === PIT_STATE.translationEpoch) {
-    const workerCount = Math.min(PIT_MAX_CONCURRENT_BATCHES, batches.length - nextBatchIndex);
-    await Promise.all(Array.from({ length: workerCount }, worker));
+    if (batches.length > nextBatchIndex && firstBatchLeadMs > 0) {
+      await Promise.race([
+        firstWorker,
+        new Promise((resolve) => window.setTimeout(resolve, firstBatchLeadMs))
+      ]);
+    }
+
+    const activeFirstBatchCount = firstBatchFinished ? 0 : 1;
+    const workerCount = (
+      !firstError
+      && !PIT_STATE.cancelRequested
+      && translationEpoch === PIT_STATE.translationEpoch
+    )
+      ? Math.min(
+        Math.max(0, PIT_MAX_CONCURRENT_PAGE_BATCHES - activeFirstBatchCount),
+        batches.length - nextBatchIndex
+      )
+      : 0;
+    const workers = Array.from({ length: workerCount }, () => worker(remainingBatchPriority));
+    await Promise.all([firstWorker, ...workers]);
   }
 
   if (firstError) {
@@ -320,7 +356,15 @@ function enqueuePendingTranslations(entries, options, { force = false, priority 
   return { cached };
 }
 
-async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.translationEpoch, overlayPrefix = "Translating") {
+async function flushPendingTranslationQueue(
+  translationEpoch = PIT_STATE.translationEpoch,
+  overlayPrefix = "Translating",
+  batchPriorities = {
+    firstBatchPriority: "background",
+    remainingBatchPriority: "background",
+    firstBatchLeadMs: 0
+  }
+) {
   const { cached, jobs } = takePendingTranslationJobs(translationEpoch);
   if (jobs.length === 0) {
     return cached;
@@ -332,7 +376,8 @@ async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.transla
       jobs.map((job) => job.entry),
       jobs[0].options,
       overlayPrefix,
-      translationEpoch
+      translationEpoch,
+      batchPriorities
     );
     return cached + translated;
   } finally {
@@ -398,11 +443,11 @@ function removePendingTranslationJob(job) {
   }
 }
 
-function schedulePendingTranslationDrain() {
+function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE_MS) {
   if (
     PIT_STATE.pendingQueue.size === 0 ||
     PIT_STATE.pendingTimer !== null ||
-    PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_BATCHES
+    PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_PAGE_BATCHES
   ) {
     return;
   }
@@ -437,11 +482,11 @@ function schedulePendingTranslationDrain() {
       }
       schedulePendingTranslationDrain();
     }
-  }, 0);
+  }, delayMs);
 }
 
 async function acquireBatchRequestSlot() {
-  if (PIT_STATE.activeBatchRequests < PIT_MAX_CONCURRENT_BATCHES) {
+  if (PIT_STATE.activeBatchRequests < PIT_MAX_CONCURRENT_PAGE_BATCHES) {
     PIT_STATE.activeBatchRequests += 1;
     return;
   }

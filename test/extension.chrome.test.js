@@ -170,6 +170,7 @@ test("loaded Chrome extension translates through its real service worker", { tim
 
     assert.ok(translationRequest?.items?.length >= 2);
     assert.equal(translationRequest.targetLanguage, "Chinese (Simplified)");
+    assert.equal(translationRequest.priority, "visible");
     assert.ok(rendered.every((text) => text.startsWith("译文：")));
     assert.ok(
       bridgeRequests

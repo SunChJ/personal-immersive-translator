@@ -21,10 +21,16 @@ test("adaptive batching sends 45 short blocks as 8 then 37", async () => {
   assert.deepEqual(result.batchSizes, [8, 37]);
 });
 
-test("long-page tail uses at most three concurrent batches", async () => {
+test("long-page tail reserves one native turn for foreground work", async () => {
   const result = await getBrowserSuiteResult("bounded-tail-concurrency");
   assert.deepEqual(result.batchSizes, [8, 40, 40, 40]);
-  assert.equal(result.maxActive, 3);
+  assert.equal(result.maxActive, 2);
+});
+
+test("first visible batch pipelines the tail without waiting for completion", async () => {
+  const result = await getBrowserSuiteResult("pipelined-tail");
+  assert.equal(result.tailStartedBeforeFirstResolved, true);
+  assert.deepEqual(result.batchSizes, [8, 37]);
 });
 
 test("duplicate source text is translated into every DOM owner", async () => {
@@ -98,10 +104,10 @@ test("pending Set prevents the same block from entering a batch twice", async ()
   assert.equal(result.readySlots, 1);
 });
 
-test("new pending work starts while an earlier drain is active", async () => {
+test("background drains remain capped below the interactive reserve", async () => {
   const result = await getBrowserSuiteResult("pending-overlap");
   assert.deepEqual(result.batchSizes, [1, 1, 1, 1]);
-  assert.equal(result.maxActive, 3);
+  assert.equal(result.maxActive, 2);
   assert.equal(result.pendingQueueSize, 0);
   assert.equal(result.readySlots, 4);
 });
@@ -465,6 +471,29 @@ function createHarnessHtml(routeSources, contentSources) {
         return { batchSizes: translationCalls().map((call) => call.items.length) };
       }
 
+      if (name === "pipelined-tail") {
+        const paragraphs = Array.from({ length: 45 }, (_, index) =>
+          '<p>Pipeline batch paragraph ' + index + ' remains readable.</p>'
+        ).join("");
+        setBody("<main>" + paragraphs + "</main>");
+        const releases = [];
+        window.__pitRuntime.send = (message) => new Promise((resolve) => {
+          releases.push(() => resolve({
+            ok: true,
+            translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+          }));
+        });
+        const translating = translatePage(TEST_OPTIONS);
+        await waitFor(() => translationCalls().length === 2, 4000, "the pipelined tail request");
+        const tailStartedBeforeFirstResolved = releases.length === 2;
+        releases.splice(0).forEach((release) => release());
+        await translating;
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          tailStartedBeforeFirstResolved
+        };
+      }
+
       if (name === "bounded-tail-concurrency") {
         const paragraphs = Array.from({ length: 128 }, (_, index) =>
           '<p>Concurrent tail paragraph number ' + index + ' is readable.</p>'
@@ -729,11 +758,13 @@ function createHarnessHtml(routeSources, contentSources) {
           enqueuePendingTranslations([entry], TEST_OPTIONS, { priority: 2 });
           return flushPendingTranslationQueue(PIT_STATE.translationEpoch);
         });
-        await waitFor(() => translationCalls().length === 3 && releases.length === 3);
+        await waitFor(() => translationCalls().length === 2 && releases.length === 2);
         await new Promise((resolve) => window.setTimeout(resolve, 30));
         const firstRelease = releases.shift();
         firstRelease();
-        await waitFor(() => translationCalls().length === 4 && releases.length === 3);
+        await waitFor(() => translationCalls().length === 3 && releases.length === 2);
+        releases.splice(0).forEach((release) => release());
+        await waitFor(() => translationCalls().length === 4 && releases.length === 1);
         releases.splice(0).forEach((release) => release());
         await Promise.all(drains);
         return {
@@ -795,6 +826,7 @@ function createHarnessHtml(routeSources, contentSources) {
       for (const name of [
         "adaptive-batches",
         "bounded-tail-concurrency",
+        "pipelined-tail",
         "duplicate-fanout",
         "semantic-inside",
         "replace-restore",
