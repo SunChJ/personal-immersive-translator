@@ -224,6 +224,34 @@ async function translateBlocks(
 
     setFloatingStatus(`${overlayPrefix} ${processedItems + 1}-${processedItems + batch.length} / ${orderedBlocks.length}`);
     prepareStableTranslationSurfaces(batch, mode, bilingualStyle);
+    const requestId = `${PIT_STATE.sessionId}-${translationEpoch}-${PIT_STATE.nextStreamRequestId++}`;
+    const entriesByID = new Map(batch.map((entry) => [entry.id, entry]));
+    const renderedIDs = new Set();
+    PIT_STATE.translationStreams.set(requestId, (translation) => {
+      if (
+        location.href !== sourceUrl
+        || PIT_STATE.cancelRequested
+        || translationEpoch !== PIT_STATE.translationEpoch
+      ) {
+        return false;
+      }
+      const entry = entriesByID.get(translation?.id);
+      if (!entry?.element.isConnected || renderedIDs.has(entry.id)) {
+        return false;
+      }
+      rememberCachedTranslations(
+        [entry],
+        [translation],
+        options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE
+      );
+      const applied = applyTranslations([entry], [translation], mode, bilingualStyle);
+      if (applied > 0) {
+        renderedIDs.add(entry.id);
+        translatedItems += applied;
+        return true;
+      }
+      return false;
+    });
 
     await acquireBatchRequestSlot();
     let response;
@@ -241,9 +269,11 @@ async function translateBlocks(
         targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
         priority: normalizeTranslationPriority(priority),
-        sourceUrl
+        sourceUrl,
+        requestId
       });
     } finally {
+      PIT_STATE.translationStreams.delete(requestId);
       releaseBatchRequestSlot();
     }
     if (location.href !== sourceUrl) {
@@ -258,8 +288,15 @@ async function translateBlocks(
       throw new Error(response?.error || "Translation request failed.");
     }
 
-    rememberCachedTranslations(batch, response.translations, options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE);
-    translatedItems += applyTranslations(batch, response.translations, mode, bilingualStyle);
+    const remainingBatch = batch.filter((entry) => !renderedIDs.has(entry.id));
+    const remainingIDs = new Set(remainingBatch.map((entry) => entry.id));
+    const remainingTranslations = response.translations.filter((translation) => remainingIDs.has(translation.id));
+    rememberCachedTranslations(
+      remainingBatch,
+      remainingTranslations,
+      options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE
+    );
+    translatedItems += applyTranslations(remainingBatch, remainingTranslations, mode, bilingualStyle);
     processedItems += batch.length;
     return true;
   }
@@ -354,7 +391,8 @@ function enqueuePendingTranslations(entries, options, { force = false, priority 
       entry,
       options,
       priority,
-      translationEpoch
+      translationEpoch,
+      sequence: PIT_STATE.nextPendingSequence++
     });
   });
 
@@ -394,7 +432,11 @@ async function flushPendingTranslationQueue(
 function takePendingTranslationJobs(translationEpoch) {
   let cached = 0;
   const candidates = Array.from(PIT_STATE.pendingQueue.values())
-    .sort((left, right) => right.priority - left.priority || pendingEntryDistance(left.entry) - pendingEntryDistance(right.entry));
+    .sort((left, right) => (
+      right.priority - left.priority
+      || pendingEntryDistance(left.entry) - pendingEntryDistance(right.entry)
+      || right.sequence - left.sequence
+    ));
   const jobs = [];
   let configKey = "";
 

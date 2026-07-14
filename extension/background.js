@@ -7,12 +7,12 @@ const autoTranslateTimers = new Map();
 const autoTranslateJobs = new Map();
 const autoTranslateGenerations = new Map();
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !["translate-batch", "check-health"].includes(message.type)) {
     return false;
   }
 
-  const task = message.type === "translate-batch" ? translateBatch(message) : checkHealth(message);
+  const task = message.type === "translate-batch" ? translateBatch(message, sender) : checkHealth(message);
   task
     .then((payload) => sendResponse({ ok: true, ...payload }))
     .catch((error) => {
@@ -43,41 +43,142 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   autoTranslateGenerations.delete(tabId);
 });
 
-async function translateBatch(message) {
+async function translateBatch(message, sender = {}) {
   const endpoint = normalizeEndpoint(message.endpoint);
   const pairingToken = await readPairingToken();
-  const response = await fetchWithTimeout(`${endpoint}/translate`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(pairingToken)
-    },
-    body: JSON.stringify({
-      items: message.items,
-      texts: message.texts,
-      targetLanguage: message.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
-      priority: normalizeTranslationPriority(message.priority),
-      sourceUrl: message.sourceUrl || ""
-    })
-  }, TRANSLATE_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
+  const startedAt = Date.now();
+  let firstRendered = false;
+  const translations = [];
 
-  const bodyText = await response.text();
-  let body;
   try {
-    body = bodyText ? JSON.parse(bodyText) : {};
+    const response = await fetch(`${endpoint}/translate/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(pairingToken)
+      },
+      body: JSON.stringify({
+        items: message.items,
+        texts: message.texts,
+        targetLanguage: message.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
+        priority: normalizeTranslationPriority(message.priority),
+        sourceUrl: message.sourceUrl || "",
+        requestId: message.requestId || ""
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const bodyText = await response.text();
+      let body = {};
+      try {
+        body = bodyText ? JSON.parse(bodyText) : {};
+      } catch {
+        throw new Error(`Local proxy returned non-JSON response: ${bodyText.slice(0, 180)}`);
+      }
+      throw new Error(body.error || `Local proxy failed with HTTP ${response.status}`);
+    }
+
+    await readTranslationStream(response, async (event) => {
+      if (event.type === "error") {
+        throw new Error(event.error || "Translation stream failed.");
+      }
+      if (event.type !== "translation" || !event.id || typeof event.text !== "string") {
+        return;
+      }
+
+      const translation = { id: event.id, text: event.text };
+      translations.push(translation);
+      const rendered = await sendTranslationProgress(sender, message.requestId, translation);
+      if (rendered && !firstRendered) {
+        firstRendered = true;
+        await reportRenderMetric(
+          endpoint,
+          pairingToken,
+          message.requestId,
+          Date.now() - startedAt
+        );
+      }
+    });
+    return { translations };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Local proxy request timed out.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readTranslationStream(response, onEvent) {
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    for (const line of text.split("\n")) {
+      if (line.trim()) await onEvent(JSON.parse(line));
+    }
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) await onEvent(JSON.parse(line));
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) await onEvent(JSON.parse(buffer));
+}
+
+async function sendTranslationProgress(sender, requestId, translation) {
+  if (!requestId || !Number.isInteger(sender?.tab?.id) || !chrome.tabs?.sendMessage) {
+    return false;
+  }
+  try {
+    const options = Number.isInteger(sender.frameId) ? { frameId: sender.frameId } : undefined;
+    const response = options
+      ? await chrome.tabs.sendMessage(sender.tab.id, {
+        type: "translation-progress",
+        requestId,
+        translation
+      }, options)
+      : await chrome.tabs.sendMessage(sender.tab.id, {
+        type: "translation-progress",
+        requestId,
+        translation
+      });
+    return response?.rendered === true;
   } catch {
-    throw new Error(`Local proxy returned non-JSON response: ${bodyText.slice(0, 180)}`);
+    return false;
   }
+}
 
-  if (!response.ok) {
-    throw new Error(body.error || `Local proxy failed with HTTP ${response.status}`);
+async function reportRenderMetric(endpoint, pairingToken, requestId, durationMs) {
+  if (!requestId) return;
+  try {
+    await fetchWithTimeout(`${endpoint}/metrics`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(pairingToken)
+      },
+      body: JSON.stringify({
+        event: "item_rendered",
+        requestId,
+        durationMs
+      })
+    }, PIT_HEALTH_TIMEOUT_MS);
+  } catch {
+    // Metrics must never delay or fail translation.
   }
-
-  if (!Array.isArray(body.translations)) {
-    throw new Error("Local proxy response did not contain a translations array.");
-  }
-
-  return { translations: body.translations };
 }
 
 async function checkHealth(message) {

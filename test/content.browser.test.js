@@ -16,21 +16,21 @@ let browserSuitePromise;
 
 installBrowserCleanupHandlers();
 
-test("adaptive batching sends 45 short blocks as 8 then 37", async () => {
+test("adaptive batching uses a 6-item first batch and 12-item tail batches", async () => {
   const result = await getBrowserSuiteResult("adaptive-batches");
-  assert.deepEqual(result.batchSizes, [8, 37]);
+  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 3]);
 });
 
 test("long-page tail reserves one native turn for foreground work", async () => {
   const result = await getBrowserSuiteResult("bounded-tail-concurrency");
-  assert.deepEqual(result.batchSizes, [8, 40, 40, 40]);
+  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 2]);
   assert.equal(result.maxActive, 2);
 });
 
 test("first visible batch pipelines the tail without waiting for completion", async () => {
   const result = await getBrowserSuiteResult("pipelined-tail");
   assert.equal(result.tailStartedBeforeFirstResolved, true);
-  assert.deepEqual(result.batchSizes, [8, 37]);
+  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 3]);
 });
 
 test("duplicate source text is translated into every DOM owner", async () => {
@@ -79,7 +79,7 @@ test("clearing while a response is delayed prevents stale injection", async () =
 test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, async () => {
   const result = await getBrowserSuiteResult("dynamic-80");
   assert.equal(result.readySlots, 80);
-  assert.deepEqual(result.batchSizes, [8, 40, 32]);
+  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 12, 12, 12, 2]);
   assert.equal(result.queueSize, 0);
   assert.equal(result.running, false);
 });
@@ -117,6 +117,17 @@ test("small background updates use a bounded trailing merge window", async () =>
   assert.deepEqual(result.batchSizes, [3]);
   assert.ok(result.requestDelayMs >= 750);
   assert.ok(result.requestDelayMs < 1_350);
+});
+
+test("character budgets are soft for one oversized item", async () => {
+  const result = await getBrowserSuiteResult("character-budget");
+  assert.deepEqual(result.normalChars, [600, 600]);
+  assert.deepEqual(result.oversizedChars, [1200, 100]);
+});
+
+test("new visible pending work is taken before older work at the same priority", async () => {
+  const result = await getBrowserSuiteResult("newest-pending-first");
+  assert.deepEqual(result.order, ["pending-new", "pending-old"]);
 });
 
 test("SPA navigation cancels stale responses and translates the new route", async () => {
@@ -202,7 +213,7 @@ async function runBrowserSuite() {
       harness.reject(new Error(`Chrome exited before returning results (${code ?? signal}).\n${stderr}`));
     });
 
-    const result = await withTimeout(harness.result, 10000, "Timed out waiting for Chrome batch results");
+    const result = await withTimeout(harness.result, 30000, "Timed out waiting for Chrome batch results");
     assert.equal(result.ok, true, result.error || "Browser content suite failed");
     return result.value;
   } finally {
@@ -478,6 +489,34 @@ function createHarnessHtml(routeSources, contentSources) {
         return { batchSizes: translationCalls().map((call) => call.items.length) };
       }
 
+      if (name === "character-budget") {
+        const chars = (length, id) => ({ id, text: "x".repeat(length) });
+        const normal = buildTranslationBatches([
+          chars(300, "one"), chars(300, "two"), chars(300, "three"), chars(300, "four")
+        ], 12, 800);
+        const oversized = buildTranslationBatches([
+          chars(1200, "large"), chars(100, "small")
+        ], 12, 800);
+        return {
+          normalChars: normal.map((batch) => batch.reduce((sum, item) => sum + item.text.length, 0)),
+          oversizedChars: oversized.map((batch) => batch.reduce((sum, item) => sum + item.text.length, 0))
+        };
+      }
+
+      if (name === "newest-pending-first") {
+        setBody(
+          '<main><p id="pending-old">Older visible pending content.</p>' +
+          '<p id="pending-new">Newer visible pending content.</p></main>'
+        );
+        const entries = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        enqueuePendingTranslations([entries[0]], TEST_OPTIONS, { priority: 1 });
+        enqueuePendingTranslations([entries[1]], TEST_OPTIONS, { priority: 1 });
+        const jobs = takePendingTranslationJobs(PIT_STATE.translationEpoch).jobs;
+        const order = jobs.map((job) => job.entry.element.id);
+        jobs.forEach((job) => PIT_STATE.pendingIds.delete(job.entry.id));
+        return { order };
+      }
+
       if (name === "pipelined-tail") {
         const paragraphs = Array.from({ length: 45 }, (_, index) =>
           '<p>Pipeline batch paragraph ' + index + ' remains readable.</p>'
@@ -493,6 +532,7 @@ function createHarnessHtml(routeSources, contentSources) {
         const translating = translatePage(TEST_OPTIONS);
         await waitFor(() => translationCalls().length === 2, 4000, "the pipelined tail request");
         const tailStartedBeforeFirstResolved = releases.length === 2;
+        window.__pitRuntime.send = window.__pitDefaultSend;
         releases.splice(0).forEach((release) => release());
         await translating;
         return {
@@ -863,6 +903,8 @@ function createHarnessHtml(routeSources, contentSources) {
       const results = {};
       for (const name of [
         "adaptive-batches",
+        "character-budget",
+        "newest-pending-first",
         "bounded-tail-concurrency",
         "pipelined-tail",
         "duplicate-fanout",

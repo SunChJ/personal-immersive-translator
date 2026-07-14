@@ -25,6 +25,7 @@ const PIT_STATE = {
   pendingDraining: 0,
   pendingTimer: null,
   pendingQueuedAt: 0,
+  nextPendingSequence: 1,
   activeBatchRequests: 0,
   batchRequestWaiters: [],
   translationCache: new Map(),
@@ -33,15 +34,17 @@ const PIT_STATE = {
   autoTranslateActive: false,
   nextBlockId: 1,
   translationEpoch: 0,
+  translationStreams: new Map(),
+  nextStreamRequestId: 1,
   lastModel: "",
   sessionId: createShortId()
 };
 
-const PIT_MIN_BATCH_CHAR_LIMIT = 1800;
-const PIT_MAX_BATCH_CHAR_LIMIT = 18000;
+const PIT_MIN_BATCH_CHAR_LIMIT = 200;
+const PIT_MAX_BATCH_CHAR_LIMIT = 4000;
 const PIT_INITIAL_ROOT_MARGIN = 600;
-const PIT_FIRST_BATCH_MAX_ITEMS = 8;
-const PIT_FIRST_BATCH_MAX_CHARS = 4000;
+const PIT_FIRST_BATCH_MAX_ITEMS = 6;
+const PIT_FIRST_BATCH_MAX_CHARS = 600;
 const PIT_DYNAMIC_MAX_WAIT = 750;
 const PIT_PENDING_DRAIN_LIMIT = 128;
 const PIT_TRANSLATION_CACHE_LIMIT = 1200;
