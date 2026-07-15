@@ -117,6 +117,7 @@ async function retryTranslationEntry(entry, options) {
   renderPendingTranslationSlot(entry.translationSlot);
 
   try {
+    await refreshTranslationProviderStatus(options.endpoint || PIT_DEFAULT_ENDPOINT);
     const pending = enqueuePendingTranslations([entry], { ...options, clearPrevious: false }, {
       force: true,
       priority: 4,

@@ -22,7 +22,7 @@ function startLazyTranslationObserver(entries, options) {
       observer.unobserve(observed.target);
       const grouped = entriesByElement.get(observed.target) || [];
       grouped.forEach((entry) => {
-        queueLazyTranslation(entry, options);
+        void queueLazyTranslation(entry, options);
       });
     });
   }, {
@@ -43,11 +43,12 @@ function startLazyTranslationObserver(entries, options) {
   PIT_STATE.lazyObserver = observer;
 }
 
-function queueLazyTranslation(entry, options) {
+async function queueLazyTranslation(entry, options) {
   if (hasExistingTranslation(entry)) {
     return;
   }
 
+  await refreshTranslationProviderStatus(options.endpoint || PIT_DEFAULT_ENDPOINT);
   delete entry.element.dataset.pitDeferred;
   enqueuePendingTranslations([entry], options, {
     priority: 3,
@@ -420,6 +421,7 @@ function mergeScanRoots(roots) {
 }
 
 async function translateDiscoveredBlocks(options, roots = [document.body]) {
+  await refreshTranslationProviderStatus(options.endpoint || PIT_DEFAULT_ENDPOINT);
   const seenIds = new Set();
   const discovered = [];
   mergeScanRoots(roots).forEach((root) => {

@@ -153,7 +153,7 @@ function renderSelectionTooltipResult(rect, translation, targetLanguage) {
     </div>
   `;
   root.querySelector(".pit-selection-text").textContent = translation;
-  root.querySelector(".pit-selection-engine span:last-child").textContent = prettyModelLabel(PIT_STATE.lastModel);
+  root.querySelector(".pit-selection-engine span:last-child").textContent = translationProviderLabel();
   root.querySelector("[data-action='copy']").addEventListener("click", async () => {
     await navigator.clipboard.writeText(translation);
     flashSelectionIcon(root.querySelector("[data-action='copy']"));

@@ -125,6 +125,13 @@ test("pending work deduplicates entries and applies cached translations", async 
   assert.equal(result.pendingQueueSize, 0);
 });
 
+test("provider revision changes invalidate page translation cache", async () => {
+  const result = await getBrowserSuiteResult("provider-cache-revision");
+  assert.equal(result.backendCalls, 2);
+  assert.deepEqual(result.translations, ["provider-a", "provider-b"]);
+  assert.equal(result.cacheSize, 1);
+});
+
 test("pending Set prevents the same block from entering a batch twice", async () => {
   const result = await getBrowserSuiteResult("pending-set-dedupe");
   assert.equal(result.queuedEntries, 1);
@@ -454,6 +461,14 @@ function createHarnessHtml(routeSources, contentSources) {
       ok: true,
       translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
     });
+    window.__pitHealth = {
+      ok: true,
+      name: "Gloss",
+      provider: "llama",
+      model: "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
+      configRevision: "provider-a",
+      warm: true
+    };
     window.__pitStorage = {
       showFloatingButton: false,
       translateSelection: false,
@@ -470,6 +485,9 @@ function createHarnessHtml(routeSources, contentSources) {
         },
         sendMessage(message) {
           window.__pitCalls.push(message);
+          if (message.type === "check-health") {
+            return Promise.resolve({ ok: true, health: { ...window.__pitHealth } });
+          }
           return window.__pitRuntime.send(message);
         }
       },
@@ -983,6 +1001,29 @@ function createHarnessHtml(routeSources, contentSources) {
         };
       }
 
+      if (name === "provider-cache-revision") {
+        setBody('<main><p id="provider-cache-owner">Cache this provider-specific sentence.</p></main>');
+        let provider = "provider-a";
+        window.__pitRuntime.send = async (message) => ({
+          ok: true,
+          translations: message.items.map((item) => ({ id: item.id, text: provider }))
+        });
+        await translatePage(TEST_OPTIONS);
+        const firstTranslation = document.querySelector(".pit-translation-ready")?.textContent || "";
+        clearTranslations();
+        window.__pitHealth.configRevision = "provider-b";
+        provider = "provider-b";
+        await translatePage(TEST_OPTIONS);
+        return {
+          backendCalls: translationCalls().length,
+          translations: [
+            firstTranslation,
+            document.querySelector(".pit-translation-ready")?.textContent || ""
+          ],
+          cacheSize: PIT_STATE.translationCache.size
+        };
+      }
+
       if (name === "pending-set-dedupe") {
         setBody('<main><p id="dedupe-owner">This block must enter the pending queue only once.</p></main>');
         await waitFor(() => !PIT_STATE.pendingDraining);
@@ -1145,6 +1186,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "dynamic-80",
         "upward-pending",
         "pending-cache",
+        "provider-cache-revision",
         "pending-set-dedupe",
         "pending-overlap",
         "trailing-background-batch",

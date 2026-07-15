@@ -37,6 +37,9 @@ const PIT_STATE = {
   translationEpoch: 0,
   translationStreams: new Map(),
   nextStreamRequestId: 1,
+  provider: "",
+  providerConfigRevision: "",
+  providerReasoning: "",
   lastModel: "",
   sessionId: createShortId()
 };

@@ -14,6 +14,7 @@ async function translatePage(options) {
   updateFloatingState("running");
 
   try {
+    await refreshTranslationProviderStatus(options.endpoint || PIT_DEFAULT_ENDPOINT);
     if (options.clearPrevious) {
       clearTranslations();
     }
@@ -619,7 +620,7 @@ function pendingTranslationConfigKey(options) {
 }
 
 function translationCacheKey(entry, targetLanguage) {
-  return `${targetLanguage}\u0000${entry.text}`;
+  return `${PIT_STATE.providerConfigRevision || "unversioned"}\u0000${targetLanguage}\u0000${entry.text}`;
 }
 
 function getCachedTranslation(entry, targetLanguage) {
