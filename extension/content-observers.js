@@ -8,9 +8,10 @@ function startLazyTranslationObserver(entries, options) {
 
   const entriesByElement = new Map();
   entries.forEach((entry) => {
-    const grouped = entriesByElement.get(entry.element) || [];
+    const observationTarget = lazyObservationTarget(entry);
+    const grouped = entriesByElement.get(observationTarget) || [];
     grouped.push(entry);
-    entriesByElement.set(entry.element, grouped);
+    entriesByElement.set(observationTarget, grouped);
   });
 
   const observer = new IntersectionObserver((observedEntries) => {
@@ -19,11 +20,10 @@ function startLazyTranslationObserver(entries, options) {
         return;
       }
 
-      observer.unobserve(observed.target);
       const grouped = entriesByElement.get(observed.target) || [];
-      grouped.forEach((entry) => {
-        void queueLazyTranslation(entry, options);
-      });
+      queueLazyTranslations(grouped, options);
+      observer.unobserve(observed.target);
+      entriesByElement.delete(observed.target);
     });
   }, {
     root: null,
@@ -36,25 +36,43 @@ function startLazyTranslationObserver(entries, options) {
       return;
     }
 
-    element.dataset.pitDeferred = "true";
+    grouped.forEach((entry) => {
+      entry.element.dataset.pitDeferred = "true";
+    });
     observer.observe(element);
   });
 
   PIT_STATE.lazyObserver = observer;
 }
 
-async function queueLazyTranslation(entry, options) {
-  if (hasExistingTranslation(entry)) {
+function queueLazyTranslations(entries, options) {
+  const pending = entries.filter((entry) => !hasExistingTranslation(entry));
+  entries.forEach((entry) => {
+    delete entry.element.dataset.pitDeferred;
+  });
+  if (pending.length === 0) {
     return;
   }
 
-  await refreshTranslationProviderStatus(options.endpoint || PIT_DEFAULT_ENDPOINT);
-  delete entry.element.dataset.pitDeferred;
-  enqueuePendingTranslations([entry], options, {
+  enqueuePendingTranslations(pending, options, {
     priority: 3,
     translationEpoch: PIT_STATE.translationEpoch
   });
   schedulePendingTranslationDrain();
+}
+
+function lazyObservationTarget(entry) {
+  let target = entry.element;
+  if (!target.matches("li")) {
+    return target;
+  }
+
+  let ancestorItem = target.parentElement?.closest("li");
+  while (ancestorItem) {
+    target = ancestorItem;
+    ancestorItem = ancestorItem.parentElement?.closest("li");
+  }
+  return target;
 }
 
 function stopLazyTranslationObserver() {

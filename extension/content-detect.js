@@ -13,7 +13,8 @@ function collectTranslationBlocks(root, options) {
       allowInteractiveAncestors: false
     },
     measurements: createMeasurementCache(),
-    collectedElements: []
+    collectedElements: [],
+    fragmentElements: new Set()
   };
 
   try {
@@ -298,6 +299,7 @@ function isParagraphCandidate(element, measurements, skipOptions) {
 }
 
 function pushTranslationBlock(element, context) {
+  const prefersChildBlocks = !context.allowChildBlocks && shouldPreferChildBlocks(element);
   if (
     context.seen.has(element) ||
     shouldSkipElement(element, context.skipOptions) ||
@@ -308,15 +310,24 @@ function pushTranslationBlock(element, context) {
     return false;
   }
 
-  if (!context.allowChildBlocks && shouldPreferChildBlocks(element)) {
+  if (prefersChildBlocks && !hasDirectReadableText(
+    element,
+    context.measurements,
+    getTextExtractionSkipOptions(context.skipOptions)
+  )) {
     return false;
   }
 
-  if (hasCollectedAncestor(element, context.seen) || hasCollectedDescendant(element)) {
+  if (
+    hasCollectedAncestor(element, context.seen, context.fragmentElements) ||
+    hasCollectedDescendant(element)
+  ) {
     return false;
   }
 
-  const text = extractReadableText(element, context.measurements, getTextExtractionSkipOptions(context.skipOptions));
+  const text = prefersChildBlocks
+    ? extractDirectReadableText(element, context.measurements, getTextExtractionSkipOptions(context.skipOptions))
+    : extractReadableText(element, context.measurements, getTextExtractionSkipOptions(context.skipOptions));
   if (text.length < context.minChars || isMostlyPunctuation(text) || isLikelyChromeText(element, text, context.measurements)) {
     return false;
   }
@@ -326,14 +337,20 @@ function pushTranslationBlock(element, context) {
   }
 
   context.seen.add(element);
+  if (prefersChildBlocks) {
+    context.fragmentElements.add(element);
+  }
   element.dataset.pitCollected = "true";
   context.collectedElements.push(element);
-  element.dataset.pitBlockKind = context.kind;
+  const kind = prefersChildBlocks ? "semantic-fragment" : context.kind;
+  const baseId = ensurePitId(element);
+  element.dataset.pitBlockKind = kind;
   context.blocks.push({
     element,
-    id: ensurePitId(element),
+    id: prefersChildBlocks ? `${baseId}-direct` : baseId,
+    insertBefore: prefersChildBlocks ? firstDirectBlockChild(element, context.measurements) : null,
     text,
-    kind: context.kind,
+    kind,
     rect: getCachedRect(element, context.measurements),
     style: readElementStyle(element, getCachedStyle(element, context.measurements))
   });
@@ -538,6 +555,12 @@ function extractInlineReadableText(node, rootElement, measurements, skipOptions)
     return "";
   }
 
+  if (node !== rootElement && PIT_PRESERVE_INLINE_TEXT_TAGS.has(node.tagName.toLowerCase())) {
+    return isVisible(node, measurements) && !isAssistiveOnlyElement(node, measurements)
+      ? node.textContent || ""
+      : "";
+  }
+
   if (node !== rootElement && shouldSkipElement(node, skipOptions)) {
     return "";
   }
@@ -560,6 +583,24 @@ function extractInlineReadableText(node, rootElement, measurements, skipOptions)
   return text;
 }
 
+function extractDirectReadableText(element, measurements, skipOptions) {
+  let text = "";
+  element.childNodes.forEach((child) => {
+    text += extractInlineReadableText(child, element, measurements, skipOptions);
+  });
+  return normalizeReadableText(text);
+}
+
+function firstDirectBlockChild(element, measurements) {
+  return Array.from(element.children).find((child) => {
+    if (!(child instanceof HTMLElement) || child.classList.contains("pit-translation")) {
+      return false;
+    }
+    const display = getCachedStyle(child, measurements).display;
+    return PIT_BLOCK_DISPLAYS.has(display) && !PIT_INLINE_DISPLAYS.has(display);
+  }) || null;
+}
+
 function extractReadableText(element, measurements, skipOptions) {
   if (element.matches("[data-testid='tweetText']")) {
     return normalizeReadableText(element.innerText || element.textContent || "");
@@ -576,6 +617,12 @@ function extractReadableTextFromNode(node, rootElement, measurements, skipOption
 
   if (node.nodeType !== Node.ELEMENT_NODE || !(node instanceof HTMLElement)) {
     return "";
+  }
+
+  if (node !== rootElement && PIT_PRESERVE_INLINE_TEXT_TAGS.has(node.tagName.toLowerCase())) {
+    return isVisible(node, measurements) && !isAssistiveOnlyElement(node, measurements)
+      ? node.textContent || ""
+      : "";
   }
 
   if (
@@ -604,10 +651,10 @@ function extractReadableTextFromNode(node, rootElement, measurements, skipOption
   return text;
 }
 
-function hasCollectedAncestor(element, seen) {
+function hasCollectedAncestor(element, seen, fragmentElements) {
   let current = element.parentElement;
   while (current) {
-    if (seen.has(current)) {
+    if (seen.has(current) && !fragmentElements?.has(current)) {
       return true;
     }
     current = current.parentElement;

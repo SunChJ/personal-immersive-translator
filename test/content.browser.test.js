@@ -71,6 +71,15 @@ test("semantic elements receive span translations inside their owner", async () 
   });
 });
 
+test("nested list sections enter the lazy queue as one complete group", async () => {
+  const result = await getBrowserSuiteResult("nested-list-lazy-group");
+  assert.equal(result.parentReady, true);
+  assert.equal(result.parentBeforeNestedList, true);
+  assert.equal(result.nestedReady, 18);
+  assert.equal(result.nestedDeferred, 0);
+  assert.equal(result.parentSource, "Set reasoning.effort intentionally for this workload.");
+});
+
 test("bilingual translations keep their source font size", async () => {
   const result = await getBrowserSuiteResult("font-size-inheritance");
   assert.deepEqual(result, {
@@ -830,6 +839,42 @@ function createHarnessHtml(routeSources, contentSources) {
         };
       }
 
+      if (name === "nested-list-lazy-group") {
+        const nestedItems = Array.from({ length: 18 }, (_, index) => (
+          '<li id="nested-item-' + index + '" style="min-height: 220px">' +
+          'Nested recommendation ' + index + ' remains part of this visible section.</li>'
+        )).join("");
+        setBody(
+          '<main><p id="nearby-copy">Visible content starts the initial translation.</p>' +
+          '<div style="height: 4200px"></div>' +
+          '<ul><li id="nested-parent">Set <code>reasoning.effort</code> intentionally for this workload.' +
+          '<ul id="nested-list">' + nestedItems + '</ul></li></ul></main>'
+        );
+        window.scrollTo(0, 0);
+        await translatePage({ ...TEST_OPTIONS, viewportFirst: true });
+
+        const parent = document.getElementById("nested-parent");
+        window.scrollTo(0, window.scrollY + parent.getBoundingClientRect().top - 300);
+        window.dispatchEvent(new Event("scroll"));
+        await waitFor(
+          () => document.querySelectorAll("#nested-list > li > .pit-translation-ready").length === 18,
+          6000,
+          "the complete nested list translation group"
+        );
+
+        const parentSlot = parent.querySelector(":scope > .pit-translation-ready");
+        const parentRequest = translationCalls()
+          .flatMap((call) => call.items)
+          .find((item) => item.id.endsWith("-direct"));
+        return {
+          parentReady: Boolean(parentSlot),
+          parentBeforeNestedList: parentSlot?.nextElementSibling?.id === "nested-list",
+          nestedReady: document.querySelectorAll("#nested-list > li > .pit-translation-ready").length,
+          nestedDeferred: document.querySelectorAll("#nested-list > li[data-pit-deferred='true']").length,
+          parentSource: parentRequest?.text || ""
+        };
+      }
+
       if (name === "font-size-inheritance") {
         setBody(
           '<main><h1 id="font-heading" style="font-size: 53px">A large heading retains its size.</h1>' +
@@ -1187,6 +1232,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "hacker-news-titles",
         "partial-batch-failure",
         "semantic-inside",
+        "nested-list-lazy-group",
         "font-size-inheritance",
         "replace-restore",
         "delayed-cancel",

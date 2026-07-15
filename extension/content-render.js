@@ -159,6 +159,11 @@ function insertTranslationSlot(entry, slot) {
   }
 
   const element = entry.element;
+  if (entry.insertBefore?.parentNode === element) {
+    element.insertBefore(slot, entry.insertBefore);
+    return;
+  }
+
   if (translationSlotPlacement(entry) === "inside") {
     element.appendChild(slot);
     return;
