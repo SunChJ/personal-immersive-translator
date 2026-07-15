@@ -71,6 +71,15 @@ test("semantic elements receive span translations inside their owner", async () 
   });
 });
 
+test("nested list sections enter the lazy queue as one complete group", async () => {
+  const result = await getBrowserSuiteResult("nested-list-lazy-group");
+  assert.equal(result.parentReady, true);
+  assert.equal(result.parentBeforeNestedList, true);
+  assert.equal(result.nestedReady, 18);
+  assert.equal(result.nestedDeferred, 0);
+  assert.equal(result.parentSource, "Set reasoning.effort intentionally for this workload.");
+});
+
 test("bilingual translations keep their source font size", async () => {
   const result = await getBrowserSuiteResult("font-size-inheritance");
   assert.deepEqual(result, {
@@ -99,6 +108,7 @@ test("clearing while a response is delayed prevents stale injection", async () =
   assert.equal(result.readySlots, 0);
   assert.equal(result.pendingSlots, 0);
   assert.equal(result.translatedFlag, "false");
+  assert.equal(result.cancelledRequestIds.length, 1);
 });
 
 test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, async () => {
@@ -123,6 +133,13 @@ test("pending work deduplicates entries and applies cached translations", async 
   assert.equal(result.backendCalls, 1);
   assert.equal(result.readySlots, 2);
   assert.equal(result.pendingQueueSize, 0);
+});
+
+test("provider revision changes invalidate page translation cache", async () => {
+  const result = await getBrowserSuiteResult("provider-cache-revision");
+  assert.equal(result.backendCalls, 2);
+  assert.deepEqual(result.translations, ["provider-a", "provider-b"]);
+  assert.equal(result.cacheSize, 1);
 });
 
 test("pending Set prevents the same block from entering a batch twice", async () => {
@@ -450,10 +467,19 @@ function createHarnessHtml(routeSources, contentSources) {
   ${scriptTags(routeSources)}
   <script>
     window.__pitCalls = [];
+    window.__pitCancelledRequests = [];
     window.__pitDefaultSend = async (message) => ({
       ok: true,
       translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
     });
+    window.__pitHealth = {
+      ok: true,
+      name: "Gloss",
+      provider: "llama",
+      model: "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
+      configRevision: "provider-a",
+      warm: true
+    };
     window.__pitStorage = {
       showFloatingButton: false,
       translateSelection: false,
@@ -470,6 +496,13 @@ function createHarnessHtml(routeSources, contentSources) {
         },
         sendMessage(message) {
           window.__pitCalls.push(message);
+          if (message.type === "check-health") {
+            return Promise.resolve({ ok: true, health: { ...window.__pitHealth } });
+          }
+          if (message.type === "cancel-translation") {
+            window.__pitCancelledRequests.push(...message.requestIds);
+            return Promise.resolve({ ok: true, cancelled: message.requestIds.length, forwarded: true });
+          }
           return window.__pitRuntime.send(message);
         }
       },
@@ -806,6 +839,42 @@ function createHarnessHtml(routeSources, contentSources) {
         };
       }
 
+      if (name === "nested-list-lazy-group") {
+        const nestedItems = Array.from({ length: 18 }, (_, index) => (
+          '<li id="nested-item-' + index + '" style="min-height: 220px">' +
+          'Nested recommendation ' + index + ' remains part of this visible section.</li>'
+        )).join("");
+        setBody(
+          '<main><p id="nearby-copy">Visible content starts the initial translation.</p>' +
+          '<div style="height: 4200px"></div>' +
+          '<ul><li id="nested-parent">Set <code>reasoning.effort</code> intentionally for this workload.' +
+          '<ul id="nested-list">' + nestedItems + '</ul></li></ul></main>'
+        );
+        window.scrollTo(0, 0);
+        await translatePage({ ...TEST_OPTIONS, viewportFirst: true });
+
+        const parent = document.getElementById("nested-parent");
+        window.scrollTo(0, window.scrollY + parent.getBoundingClientRect().top - 300);
+        window.dispatchEvent(new Event("scroll"));
+        await waitFor(
+          () => document.querySelectorAll("#nested-list > li > .pit-translation-ready").length === 18,
+          6000,
+          "the complete nested list translation group"
+        );
+
+        const parentSlot = parent.querySelector(":scope > .pit-translation-ready");
+        const parentRequest = translationCalls()
+          .flatMap((call) => call.items)
+          .find((item) => item.id.endsWith("-direct"));
+        return {
+          parentReady: Boolean(parentSlot),
+          parentBeforeNestedList: parentSlot?.nextElementSibling?.id === "nested-list",
+          nestedReady: document.querySelectorAll("#nested-list > li > .pit-translation-ready").length,
+          nestedDeferred: document.querySelectorAll("#nested-list > li[data-pit-deferred='true']").length,
+          parentSource: parentRequest?.text || ""
+        };
+      }
+
       if (name === "font-size-inheritance") {
         setBody(
           '<main><h1 id="font-heading" style="font-size: 53px">A large heading retains its size.</h1>' +
@@ -885,6 +954,7 @@ function createHarnessHtml(routeSources, contentSources) {
           pendingSpinnerCount,
           pendingSlots: document.querySelectorAll(".pit-translation-pending").length,
           readySlots: document.querySelectorAll(".pit-translation-ready").length,
+          cancelledRequestIds: [...window.__pitCancelledRequests],
           translatedFlag: owner.dataset.pitTranslated || "false"
         };
       }
@@ -980,6 +1050,29 @@ function createHarnessHtml(routeSources, contentSources) {
           backendCalls: translationCalls().length,
           readySlots: document.querySelectorAll(".pit-translation-ready").length,
           pendingQueueSize: PIT_STATE.pendingQueue.size
+        };
+      }
+
+      if (name === "provider-cache-revision") {
+        setBody('<main><p id="provider-cache-owner">Cache this provider-specific sentence.</p></main>');
+        let provider = "provider-a";
+        window.__pitRuntime.send = async (message) => ({
+          ok: true,
+          translations: message.items.map((item) => ({ id: item.id, text: provider }))
+        });
+        await translatePage(TEST_OPTIONS);
+        const firstTranslation = document.querySelector(".pit-translation-ready")?.textContent || "";
+        clearTranslations();
+        window.__pitHealth.configRevision = "provider-b";
+        provider = "provider-b";
+        await translatePage(TEST_OPTIONS);
+        return {
+          backendCalls: translationCalls().length,
+          translations: [
+            firstTranslation,
+            document.querySelector(".pit-translation-ready")?.textContent || ""
+          ],
+          cacheSize: PIT_STATE.translationCache.size
         };
       }
 
@@ -1139,12 +1232,14 @@ function createHarnessHtml(routeSources, contentSources) {
         "hacker-news-titles",
         "partial-batch-failure",
         "semantic-inside",
+        "nested-list-lazy-group",
         "font-size-inheritance",
         "replace-restore",
         "delayed-cancel",
         "dynamic-80",
         "upward-pending",
         "pending-cache",
+        "provider-cache-revision",
         "pending-set-dedupe",
         "pending-overlap",
         "trailing-background-batch",

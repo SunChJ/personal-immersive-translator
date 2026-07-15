@@ -342,6 +342,7 @@ async function handleFloatingAutoTranslateChange(root) {
 function stopFloatingAutoTranslateSession() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  cancelActiveTranslationRequests();
   PIT_STATE.autoTranslateActive = false;
   clearPendingTranslationQueue();
   stopDynamicTranslationObserver();
@@ -389,21 +390,9 @@ async function checkFloatingHealth(root, endpoint) {
   const badge = root.querySelector(".pit-floating-badge");
 
   try {
-    const response = await chrome.runtime.sendMessage({
-      type: "check-health",
-      endpoint
-    });
-
-    if (!response?.ok) {
-      throw new Error(response?.error || "Health check failed.");
-    }
-
-    const body = response.health || {};
-    if (body.model) {
-      PIT_STATE.lastModel = body.model;
-    }
-    const model = body.name === "Gloss" ? "Gloss · Codex ready" : prettyModelLabel(body.model);
-    serverState.textContent = body.warm === false ? `${model} warming` : model;
+    const body = await refreshTranslationProviderStatus(endpoint);
+    const model = translationProviderLabel(body);
+    serverState.textContent = body.warm === false ? `${model} · warming` : model;
     latency.textContent = body.lastLatencyMs ? `${body.lastLatencyMs}ms` : body.warm === false ? "warming" : "--";
     badge.dataset.ok = "true";
     updateFloatingState();
@@ -413,6 +402,47 @@ async function checkFloatingHealth(root, endpoint) {
     badge.textContent = "OFF";
     badge.dataset.ok = "false";
   }
+}
+
+async function refreshTranslationProviderStatus(endpoint) {
+  const response = await chrome.runtime.sendMessage({
+    type: "check-health",
+    endpoint
+  });
+  if (!response?.ok) {
+    throw new Error(response?.error || "Health check failed.");
+  }
+
+  const body = response.health || {};
+  const revision = String(body.configRevision || "").trim();
+  if (
+    revision
+    && PIT_STATE.providerConfigRevision
+    && revision !== PIT_STATE.providerConfigRevision
+  ) {
+    PIT_STATE.translationCache.clear();
+  }
+  if (revision) {
+    PIT_STATE.providerConfigRevision = revision;
+  }
+  PIT_STATE.provider = String(body.provider || "").trim();
+  PIT_STATE.providerReasoning = String(body.reasoning || "").trim();
+  if (body.model) {
+    PIT_STATE.lastModel = String(body.model);
+  }
+  return body;
+}
+
+function translationProviderLabel(status = {}) {
+  const model = prettyModelLabel(status.model || PIT_STATE.lastModel, "Translation engine");
+  const provider = String(status.provider || PIT_STATE.provider).toLowerCase();
+  if (provider === "llama") {
+    return `Local · ${model}`;
+  }
+  if (provider === "codex") {
+    return `GPT · ${model}`;
+  }
+  return model;
 }
 
 async function toggleTranslationFromFloating() {

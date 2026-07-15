@@ -76,16 +76,47 @@ test("global auto-translate stays off when only a legacy site preference exists"
   assert.equal(runtime.timerCount(), 0);
 });
 
+test("cancelling a translation aborts the active fetch and forwards the request id", async () => {
+  const runtime = createBackgroundRuntime();
+  const translating = runtime.message({
+    type: "translate-batch",
+    requestId: "browser-request-1",
+    endpoint: AUTO_TRANSLATE_SETTINGS.endpoint,
+    targetLanguage: AUTO_TRANSLATE_SETTINGS.targetLanguage,
+    priority: "background",
+    items: [{ id: "one", text: "Long local translation" }]
+  });
+  await flushTasks();
+
+  const cancellation = await runtime.message({
+    type: "cancel-translation",
+    requestIds: ["browser-request-1"],
+    endpoint: AUTO_TRANSLATE_SETTINGS.endpoint
+  });
+  const translation = await translating;
+
+  assert.equal(cancellation.ok, true);
+  assert.equal(cancellation.cancelled, 1);
+  assert.equal(cancellation.forwarded, true, JSON.stringify(cancellation));
+  assert.equal(translation.ok, false);
+  assert.match(translation.error, /cancelled/i);
+  assert.deepEqual(runtime.forwardedCancels, [["browser-request-1"]]);
+});
+
 function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
   const listeners = {};
   const timers = new Map();
   const sentMessages = [];
   const pendingSends = [];
+  const forwardedCancels = [];
   let nextTimerId = 1;
 
   const context = vm.createContext({
     console,
     Promise,
+    AbortController,
+    DOMException,
+    TextDecoder,
     URL,
     clearTimeout(id) {
       timers.delete(id);
@@ -95,6 +126,13 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
       const id = nextTimerId++;
       timers.set(id, callback);
       return id;
+    },
+    fetch(_url, options) {
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
     },
     chrome: {
       runtime: {
@@ -121,11 +159,18 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
     normalizeEndpoint(value) {
       return value;
     },
+    normalizePairingToken(value) {
+      return String(value || "").trim();
+    },
     normalizeTargetLanguage(value) {
       return value;
     },
-    fetchWithTimeout: async () => {
-      throw new Error("not used in this test");
+    normalizeTranslationPriority(value) {
+      return value;
+    },
+    fetchWithTimeout: async (_url, options) => {
+      forwardedCancels.push(JSON.parse(options.body).requestIds);
+      return { ok: true };
     },
     hostFromUrl(value) {
       return new URL(value).hostname;
@@ -133,7 +178,9 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
     PIT_DEFAULT_BATCH_CHAR_LIMIT: 10000,
     PIT_DEFAULT_BILINGUAL_STYLE: "dashed",
     PIT_DEFAULT_ENDPOINT: "http://127.0.0.1:8787",
+    PIT_DEFAULT_PAIRING_TOKEN: "test-token",
     PIT_DEFAULT_TARGET_LANGUAGE: "Chinese (Simplified)",
+    PIT_BROWSER_TARGET: "chrome",
     PIT_HEALTH_TIMEOUT_MS: 5000,
     PIT_MAX_BATCH_ITEMS: 40,
     PIT_TOKEN: "test-token"
@@ -150,7 +197,14 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
   vm.runInContext(fs.readFileSync(BACKGROUND_PATH, "utf8"), context, { filename: BACKGROUND_PATH });
 
   return {
+    forwardedCancels,
     sentMessages,
+    message(message) {
+      return new Promise((resolve) => {
+        const handled = listeners.runtimeMessage(message, { tab: { id: 1 } }, resolve);
+        assert.equal(handled, true);
+      });
+    },
     updated: listeners.updated,
     rejectSend(index, error) {
       pendingSends[index].reject(error);

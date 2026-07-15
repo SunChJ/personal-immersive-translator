@@ -117,6 +117,7 @@ async function retryTranslationEntry(entry, options) {
   renderPendingTranslationSlot(entry.translationSlot);
 
   try {
+    await refreshTranslationProviderStatus(options.endpoint || PIT_DEFAULT_ENDPOINT);
     const pending = enqueuePendingTranslations([entry], { ...options, clearPrevious: false }, {
       force: true,
       priority: 4,
@@ -158,6 +159,11 @@ function insertTranslationSlot(entry, slot) {
   }
 
   const element = entry.element;
+  if (entry.insertBefore?.parentNode === element) {
+    element.insertBefore(slot, entry.insertBefore);
+    return;
+  }
+
   if (translationSlotPlacement(entry) === "inside") {
     element.appendChild(slot);
     return;
@@ -384,6 +390,7 @@ function restoreAllReplaceTranslations() {
 function clearTranslations() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  cancelActiveTranslationRequests();
   clearPendingTranslationQueue();
   stopDynamicTranslationObserver();
   stopLazyTranslationObserver();

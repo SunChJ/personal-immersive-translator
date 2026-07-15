@@ -18,6 +18,8 @@ const PIT_STATE = {
   selectionTooltip: null,
   selectionTimer: null,
   selectionRequestId: 0,
+  activeSelectionBridgeRequestId: "",
+  activeSelectionEndpoint: "",
   selectionTranslationEnabled: true,
   lazyObserver: null,
   pendingQueue: new Map(),
@@ -36,7 +38,11 @@ const PIT_STATE = {
   nextBlockId: 1,
   translationEpoch: 0,
   translationStreams: new Map(),
+  translationRequestEndpoints: new Map(),
   nextStreamRequestId: 1,
+  provider: "",
+  providerConfigRevision: "",
+  providerReasoning: "",
   lastModel: "",
   sessionId: createShortId()
 };
@@ -168,6 +174,13 @@ const PIT_SKIP_TAGS = new Set([
   "time",
   "track",
   "video"
+]);
+
+const PIT_PRESERVE_INLINE_TEXT_TAGS = new Set([
+  "code",
+  "kbd",
+  "samp",
+  "var"
 ]);
 
 const PIT_BLOCK_DISPLAYS = new Set([
