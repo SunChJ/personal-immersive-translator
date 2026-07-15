@@ -288,6 +288,7 @@ async function sendAutoTranslateMessage(tabId, url, settings, job) {
     viewportFirst: settings.viewportFirst !== false,
     showFloatingButton: settings.showFloatingButton !== false,
     translateSelection: settings.translateSelection !== false,
+    autoTranslate: true,
     batchSize: PIT_MAX_BATCH_ITEMS,
     batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4

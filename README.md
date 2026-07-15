@@ -87,7 +87,7 @@ The extension injects a small floating translate button on normal web pages.
 
 - Drag it to either edge of the page to snap it there.
 - Left-click it to toggle translated/original content.
-- Right-click it to open the floating menu with server status, target language, mode, and quick actions.
+- Right-click it to open the floating menu with Auto-translate for the current site, target language, mode, server status, and quick actions.
 - If hidden, reopen the extension popup and enable `Advanced -> Show floating button`.
 
 ## Translation Settings
