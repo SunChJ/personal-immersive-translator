@@ -1,6 +1,6 @@
 # Gloss 浏览器扩展
 
-> 由 Gloss macOS App 与现有 Codex 登录驱动的沉浸式网页翻译扩展。
+> 由 Gloss macOS App 内置的原生 Rust runtime 与独立 ChatGPT 登录驱动的沉浸式网页翻译扩展。
 
 [English README](./README.md) · [Changelog](./CHANGELOG.md)
 
@@ -20,7 +20,7 @@ Gloss 扩展通过同一套 WXT 代码为 Chrome 和 Safari 提供整页、划�
 - 相同全文只请求一次，并把译文准确回填到每个 DOM 位置。
 - 替换模式不会销毁原始链接和行内节点，清除后可完整恢复。
 - 本地翻译缓存，重复文本几乎瞬时返回。
-- 与 Gloss 原生端共享翻译代理、缓存和已登录的 Codex 会话。
+- 与 Gloss 原生端共享翻译代理、缓存和独立的 ChatGPT 会话。
 
 ## 架构
 
@@ -39,12 +39,8 @@ Gloss 会在私有 App 存储中生成随机的 256 位配对令牌。Chrome 从
 - Chrome 或 Safari
 - Gloss
 - Node.js 20.12+（构建扩展时）
-- 已登录 ChatGPT 的 Codex CLI：
 
-```bash
-codex login
-codex login status
-```
+首次使用时，在 **Gloss 设置 → 登录 ChatGPT** 完成一次登录即可。正常使用 Gloss 不需要单独安装 Codex CLI 或 Node.js；只有从源码构建扩展时才需要 Node.js。
 
 ## 快速开始
 
@@ -203,4 +199,4 @@ npm run observe -- --reset
 
 ## 说明
 
-ChatGPT 订阅额度和 OpenAI API 计费是分开的。本项目默认使用官方 Codex CLI 的登录路径，适合作为个人自用的订阅能力桥接。OpenAI API 后端是可选项，并会走单独 API 计费。
+ChatGPT 订阅额度和 OpenAI API 计费是分开的。Gloss 默认使用内置的 Codex app-server 与独立 ChatGPT 登录，适合作为个人自用的订阅能力桥接。OpenAI API 后端是可选项，并会走单独 API 计费。

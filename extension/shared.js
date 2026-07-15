@@ -9,6 +9,7 @@ const PIT_DEFAULT_PAIRING_TOKEN = String(globalThis.GLOSS_PAIRING_TOKEN || "").t
 const PIT_DEFAULT_TARGET_LANGUAGE = "Chinese (Simplified)";
 const PIT_DEFAULT_BILINGUAL_STYLE = "dashed";
 const PIT_BILINGUAL_STYLES = new Set(["dashed", "dotted", "wavy", "highlight", "soft-box", "blur"]);
+const PIT_TRANSLATION_PRIORITIES = new Set(["interactive", "visible", "background"]);
 const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["中文", "Chinese (Simplified)"],
   ["简体中文", "Chinese (Simplified)"],
@@ -20,8 +21,8 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["韩文", "Korean"],
   ["韩语", "Korean"]
 ]);
-const PIT_MAX_BATCH_ITEMS = 40;
-const PIT_DEFAULT_BATCH_CHAR_LIMIT = 10000;
+const PIT_MAX_BATCH_ITEMS = 8;
+const PIT_DEFAULT_BATCH_CHAR_LIMIT = 800;
 const PIT_HEALTH_TIMEOUT_MS = 5000;
 const PIT_TARGET_LANGUAGE_PATTERN = /^[\p{L}\p{M}\p{N} _(),.'’-]{1,100}$/u;
 
@@ -36,6 +37,10 @@ function normalizeTargetLanguage(value) {
 
 function normalizeBilingualStyle(value) {
   return PIT_BILINGUAL_STYLES.has(value) ? value : PIT_DEFAULT_BILINGUAL_STYLE;
+}
+
+function normalizeTranslationPriority(value, fallback = "visible") {
+  return PIT_TRANSLATION_PRIORITIES.has(value) ? value : fallback;
 }
 
 function normalizeEndpoint(endpoint) {

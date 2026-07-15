@@ -1,6 +1,6 @@
 # Gloss Browser Extension
 
-> Immersive page translation powered by the Gloss macOS app and your existing Codex login.
+> Immersive page translation powered by Gloss's bundled native Rust runtime and independent ChatGPT login.
 
 [中文文档](./README.zh-CN.md) · [Changelog](./CHANGELOG.md)
 
@@ -20,7 +20,7 @@ The Gloss extension adds page, selection, bilingual, and replace-mode translatio
 - Translate identical full text once and fan the result back out to every DOM position.
 - Keep replace mode reversible without destroying original links or inline nodes.
 - Keep a local translation cache for repeated text.
-- Share Gloss's native translation broker, cache, and logged-in Codex session.
+- Share Gloss's native translation broker, cache, and independent ChatGPT session.
 
 ## Architecture
 
@@ -39,12 +39,8 @@ Gloss creates a random 256-bit pairing token. Chrome receives it in the App-mana
 - Chrome or Safari
 - Gloss
 - Node.js 20.12+ for extension builds
-- Codex CLI logged in with ChatGPT:
 
-```bash
-codex login
-codex login status
-```
+Sign in once from **Gloss Settings → Log In to ChatGPT**. Using Gloss does not require a separate Codex CLI or Node.js installation; Node.js is only needed to build the extension from source.
 
 ## Quick Start
 
@@ -203,4 +199,4 @@ The project uses semver. Keep `package.json`, `wxt.config.ts`, and `CHANGELOG.md
 
 ## Notes
 
-ChatGPT subscription access and OpenAI API billing are separate. This project uses the official Codex CLI path for subscription-backed personal use. The API backend is optional and uses separate API billing.
+ChatGPT subscription access and OpenAI API billing are separate. Gloss uses its bundled Codex app-server and independent ChatGPT login for subscription-backed personal use. The API backend is optional and uses separate API billing.

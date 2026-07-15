@@ -17,6 +17,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
+  if (message.type === "translation-progress") {
+    const render = PIT_STATE.translationStreams.get(message.requestId);
+    const rendered = Boolean(render?.(message.translation));
+    sendResponse({ ok: true, rendered });
+    return false;
+  }
+
   if (message.type !== "start-page-translation") {
     return false;
   }
@@ -36,4 +43,3 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 initFloatingControl();
 initSelectionTranslation();
-

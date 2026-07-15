@@ -56,7 +56,15 @@ async function translatePage(options) {
       priority: 2,
       translationEpoch
     });
-    const translated = pending.cached + await flushPendingTranslationQueue(translationEpoch, "Translating");
+    const translated = pending.cached + await flushPendingTranslationQueue(
+      translationEpoch,
+      "Translating",
+      {
+        firstBatchPriority: "visible",
+        remainingBatchPriority: "background",
+        firstBatchLeadMs: PIT_FIRST_BATCH_LEAD_MS
+      }
+    );
 
     if (location.href !== PIT_STATE.dynamicRouteUrl) {
       handlePossibleRouteChange(options);
@@ -173,16 +181,27 @@ function takeTranslationBatch(entries, offset, maxItems, maxChars) {
   return batch;
 }
 
-// The small fast-first batch is awaited before the remaining batches fan out.
-// That keeps first-screen latency low while still using bounded concurrency for
-// the long-page tail. The server applies the same limit to isolated Codex turns.
-const PIT_MAX_CONCURRENT_BATCHES = 3;
+// Page work owns at most two native turns. The third stays free for an explicit
+// selection translation or another foreground interaction.
+const PIT_MAX_CONCURRENT_PAGE_BATCHES = 2;
+const PIT_FIRST_BATCH_LEAD_MS = 120;
+// Dynamic pages often reveal a few text nodes over several mutation callbacks.
+// Let those background-only updates settle into one turn, but never hold them
+// long enough to feel stalled.
+const PIT_BACKGROUND_BATCH_DEBOUNCE_MS = 600;
+const PIT_BACKGROUND_BATCH_MAX_WAIT_MS = 1200;
+const PIT_BACKGROUND_BATCH_MIN_ITEMS = 8;
 
 async function translateBlocks(
   orderedBlocks,
   options,
   overlayPrefix = "Translating",
-  translationEpoch = PIT_STATE.translationEpoch
+  translationEpoch = PIT_STATE.translationEpoch,
+  {
+    firstBatchPriority = "visible",
+    remainingBatchPriority = "background",
+    firstBatchLeadMs = PIT_FIRST_BATCH_LEAD_MS
+  } = {}
 ) {
   const maxBatchItems = clamp(Number(options.batchSize || PIT_MAX_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
   const maxBatchChars = clamp(Number(options.batchCharLimit || PIT_DEFAULT_BATCH_CHAR_LIMIT), PIT_MIN_BATCH_CHAR_LIMIT, PIT_MAX_BATCH_CHAR_LIMIT);
@@ -195,7 +214,7 @@ async function translateBlocks(
   let firstError = null;
   let nextBatchIndex = 0;
 
-  async function sendBatch(batch) {
+  async function sendBatch(batch, priority) {
     if (location.href !== sourceUrl) {
       handlePossibleRouteChange(options);
     }
@@ -205,6 +224,34 @@ async function translateBlocks(
 
     setFloatingStatus(`${overlayPrefix} ${processedItems + 1}-${processedItems + batch.length} / ${orderedBlocks.length}`);
     prepareStableTranslationSurfaces(batch, mode, bilingualStyle);
+    const requestId = `${PIT_STATE.sessionId}-${translationEpoch}-${PIT_STATE.nextStreamRequestId++}`;
+    const entriesByID = new Map(batch.map((entry) => [entry.id, entry]));
+    const renderedIDs = new Set();
+    PIT_STATE.translationStreams.set(requestId, (translation) => {
+      if (
+        location.href !== sourceUrl
+        || PIT_STATE.cancelRequested
+        || translationEpoch !== PIT_STATE.translationEpoch
+      ) {
+        return false;
+      }
+      const entry = entriesByID.get(translation?.id);
+      if (!entry?.element.isConnected || renderedIDs.has(entry.id)) {
+        return false;
+      }
+      rememberCachedTranslations(
+        [entry],
+        [translation],
+        options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE
+      );
+      const applied = applyTranslations([entry], [translation], mode, bilingualStyle);
+      if (applied > 0) {
+        renderedIDs.add(entry.id);
+        translatedItems += applied;
+        return true;
+      }
+      return false;
+    });
 
     await acquireBatchRequestSlot();
     let response;
@@ -221,9 +268,12 @@ async function translateBlocks(
         })),
         targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
-        sourceUrl
+        priority: normalizeTranslationPriority(priority),
+        sourceUrl,
+        requestId
       });
     } finally {
+      PIT_STATE.translationStreams.delete(requestId);
       releaseBatchRequestSlot();
     }
     if (location.href !== sourceUrl) {
@@ -238,13 +288,31 @@ async function translateBlocks(
       throw new Error(response?.error || "Translation request failed.");
     }
 
-    rememberCachedTranslations(batch, response.translations, options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE);
-    translatedItems += applyTranslations(batch, response.translations, mode, bilingualStyle);
+    const remainingBatch = batch.filter((entry) => !renderedIDs.has(entry.id));
+    const failedIDs = new Set(response.failedIds || []);
+    const successfulBatch = remainingBatch.filter((entry) => !failedIDs.has(entry.id));
+    const successfulIDs = new Set(successfulBatch.map((entry) => entry.id));
+    const remainingTranslations = response.translations.filter((translation) => successfulIDs.has(translation.id));
+    rememberCachedTranslations(
+      successfulBatch,
+      remainingTranslations,
+      options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE
+    );
+    translatedItems += applyTranslations(successfulBatch, remainingTranslations, mode, bilingualStyle);
+    const failedEntries = batch.filter((entry) => failedIDs.has(entry.id));
+    if (failedEntries.length > 0) {
+      markPendingTranslationSurfacesFailed(
+        failedEntries,
+        mode,
+        options,
+        new Error(response.error || "Translation request partially failed.")
+      );
+    }
     processedItems += batch.length;
     return true;
   }
 
-  async function worker() {
+  async function worker(priority) {
     while (nextBatchIndex < batches.length) {
       if (PIT_STATE.cancelRequested || firstError) {
         return;
@@ -254,7 +322,7 @@ async function translateBlocks(
       nextBatchIndex += 1;
 
       try {
-        if (!await sendBatch(batch)) {
+        if (!await sendBatch(batch, priority)) {
           return;
         }
       } catch (error) {
@@ -266,16 +334,37 @@ async function translateBlocks(
 
   if (batches.length > 0) {
     nextBatchIndex = 1;
-    try {
-      await sendBatch(batches[0]);
-    } catch (error) {
-      firstError = error;
-    }
-  }
+    let firstBatchFinished = false;
+    const firstWorker = (async () => {
+      try {
+        await sendBatch(batches[0], firstBatchPriority);
+      } catch (error) {
+        firstError = firstError || error;
+      } finally {
+        firstBatchFinished = true;
+      }
+    })();
 
-  if (!firstError && !PIT_STATE.cancelRequested && translationEpoch === PIT_STATE.translationEpoch) {
-    const workerCount = Math.min(PIT_MAX_CONCURRENT_BATCHES, batches.length - nextBatchIndex);
-    await Promise.all(Array.from({ length: workerCount }, worker));
+    if (batches.length > nextBatchIndex && firstBatchLeadMs > 0) {
+      await Promise.race([
+        firstWorker,
+        new Promise((resolve) => window.setTimeout(resolve, firstBatchLeadMs))
+      ]);
+    }
+
+    const activeFirstBatchCount = firstBatchFinished ? 0 : 1;
+    const workerCount = (
+      !firstError
+      && !PIT_STATE.cancelRequested
+      && translationEpoch === PIT_STATE.translationEpoch
+    )
+      ? Math.min(
+        Math.max(0, PIT_MAX_CONCURRENT_PAGE_BATCHES - activeFirstBatchCount),
+        batches.length - nextBatchIndex
+      )
+      : 0;
+    const workers = Array.from({ length: workerCount }, () => worker(remainingBatchPriority));
+    await Promise.all([firstWorker, ...workers]);
   }
 
   if (firstError) {
@@ -313,14 +402,23 @@ function enqueuePendingTranslations(entries, options, { force = false, priority 
       entry,
       options,
       priority,
-      translationEpoch
+      translationEpoch,
+      sequence: PIT_STATE.nextPendingSequence++
     });
   });
 
   return { cached };
 }
 
-async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.translationEpoch, overlayPrefix = "Translating") {
+async function flushPendingTranslationQueue(
+  translationEpoch = PIT_STATE.translationEpoch,
+  overlayPrefix = "Translating",
+  batchPriorities = {
+    firstBatchPriority: "background",
+    remainingBatchPriority: "background",
+    firstBatchLeadMs: 0
+  }
+) {
   const { cached, jobs } = takePendingTranslationJobs(translationEpoch);
   if (jobs.length === 0) {
     return cached;
@@ -332,7 +430,8 @@ async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.transla
       jobs.map((job) => job.entry),
       jobs[0].options,
       overlayPrefix,
-      translationEpoch
+      translationEpoch,
+      batchPriorities
     );
     return cached + translated;
   } finally {
@@ -344,7 +443,11 @@ async function flushPendingTranslationQueue(translationEpoch = PIT_STATE.transla
 function takePendingTranslationJobs(translationEpoch) {
   let cached = 0;
   const candidates = Array.from(PIT_STATE.pendingQueue.values())
-    .sort((left, right) => right.priority - left.priority || pendingEntryDistance(left.entry) - pendingEntryDistance(right.entry));
+    .sort((left, right) => (
+      right.priority - left.priority
+      || pendingEntryDistance(left.entry) - pendingEntryDistance(right.entry)
+      || right.sequence - left.sequence
+    ));
   const jobs = [];
   let configKey = "";
 
@@ -398,17 +501,33 @@ function removePendingTranslationJob(job) {
   }
 }
 
-function schedulePendingTranslationDrain() {
+function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE_MS, resetTimer = true) {
   if (
     PIT_STATE.pendingQueue.size === 0 ||
-    PIT_STATE.pendingTimer !== null ||
-    PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_BATCHES
+    PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_PAGE_BATCHES
   ) {
     return;
   }
 
+  if (PIT_STATE.pendingTimer !== null) {
+    if (!resetTimer) {
+      return;
+    }
+    window.clearTimeout(PIT_STATE.pendingTimer);
+  }
+
+  const now = Date.now();
+  if (!PIT_STATE.pendingQueuedAt) {
+    PIT_STATE.pendingQueuedAt = now;
+  }
+  const elapsed = now - PIT_STATE.pendingQueuedAt;
+  const waitMs = PIT_STATE.pendingQueue.size >= PIT_BACKGROUND_BATCH_MIN_ITEMS
+    ? 0
+    : Math.min(delayMs, Math.max(0, PIT_BACKGROUND_BATCH_MAX_WAIT_MS - elapsed));
+
   PIT_STATE.pendingTimer = window.setTimeout(async () => {
     PIT_STATE.pendingTimer = null;
+    PIT_STATE.pendingQueuedAt = 0;
     if (PIT_STATE.pendingQueue.size === 0) {
       return;
     }
@@ -435,13 +554,13 @@ function schedulePendingTranslationDrain() {
       if (!PIT_STATE.running && PIT_STATE.pendingDraining === 0) {
         updateFloatingState();
       }
-      schedulePendingTranslationDrain();
+      schedulePendingTranslationDrain(PIT_BACKGROUND_BATCH_DEBOUNCE_MS, false);
     }
-  }, 0);
+  }, waitMs);
 }
 
 async function acquireBatchRequestSlot() {
-  if (PIT_STATE.activeBatchRequests < PIT_MAX_CONCURRENT_BATCHES) {
+  if (PIT_STATE.activeBatchRequests < PIT_MAX_CONCURRENT_PAGE_BATCHES) {
     PIT_STATE.activeBatchRequests += 1;
     return;
   }
@@ -463,6 +582,7 @@ function releaseBatchRequestSlot() {
 function clearPendingTranslationQueue() {
   window.clearTimeout(PIT_STATE.pendingTimer);
   PIT_STATE.pendingTimer = null;
+  PIT_STATE.pendingQueuedAt = 0;
   PIT_STATE.pendingQueue.forEach((job) => {
     if (job.entry.translationSlot?.classList.contains("pit-translation-pending")) {
       job.entry.translationSlot.remove();

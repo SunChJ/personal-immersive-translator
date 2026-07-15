@@ -16,15 +16,24 @@ let browserSuitePromise;
 
 installBrowserCleanupHandlers();
 
-test("adaptive batching sends 45 short blocks as 8 then 37", async () => {
+test("adaptive batching uses a 6-item first batch and 8-item tail batches", async () => {
   const result = await getBrowserSuiteResult("adaptive-batches");
-  assert.deepEqual(result.batchSizes, [8, 37]);
+  assert.deepEqual(result.batchSizes, [6, 8, 8, 8, 8, 7]);
 });
 
-test("long-page tail uses at most three concurrent batches", async () => {
+test("long-page tail reserves one native turn for foreground work", async () => {
   const result = await getBrowserSuiteResult("bounded-tail-concurrency");
-  assert.deepEqual(result.batchSizes, [8, 40, 40, 40]);
-  assert.equal(result.maxActive, 3);
+  assert.equal(result.batchSizes[0], 6);
+  assert.equal(result.batchSizes.at(-1), 2);
+  assert.ok(result.batchSizes.slice(1, -1).every((size) => size === 8));
+  assert.equal(result.batchSizes.reduce((sum, size) => sum + size, 0), 128);
+  assert.equal(result.maxActive, 2);
+});
+
+test("first visible batch pipelines the tail without waiting for completion", async () => {
+  const result = await getBrowserSuiteResult("pipelined-tail");
+  assert.equal(result.tailStartedBeforeFirstResolved, true);
+  assert.deepEqual(result.batchSizes, [6, 8, 8, 8, 8, 7]);
 });
 
 test("duplicate source text is translated into every DOM owner", async () => {
@@ -36,6 +45,20 @@ test("duplicate source text is translated into every DOM owner", async () => {
     "translated:Repeated source paragraph.",
     "translated:Repeated source paragraph."
   ]);
+});
+
+test("Hacker News title rows are not mistaken for navigation", async () => {
+  const result = await getBrowserSuiteResult("hacker-news-titles");
+  assert.equal(result.requestItems, 17);
+  assert.equal(result.readySlots, 17);
+  assert.equal(result.untranslatedTitles, 0);
+});
+
+test("a partial batch failure keeps successful items rendered", async () => {
+  const result = await getBrowserSuiteResult("partial-batch-failure");
+  assert.equal(result.readySlots, 1);
+  assert.equal(result.failedSlots, 1);
+  assert.equal(result.successText, "translated:This item should remain translated.");
 });
 
 test("semantic elements receive span translations inside their owner", async () => {
@@ -73,7 +96,10 @@ test("clearing while a response is delayed prevents stale injection", async () =
 test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, async () => {
   const result = await getBrowserSuiteResult("dynamic-80");
   assert.equal(result.readySlots, 80);
-  assert.deepEqual(result.batchSizes, [8, 40, 32]);
+  assert.equal(result.batchSizes[0], 6);
+  assert.equal(result.batchSizes.at(-1), 2);
+  assert.ok(result.batchSizes.slice(1, -1).every((size) => size === 8));
+  assert.equal(result.batchSizes.reduce((sum, size) => sum + size, 0), 80);
   assert.equal(result.queueSize, 0);
   assert.equal(result.running, false);
 });
@@ -98,12 +124,30 @@ test("pending Set prevents the same block from entering a batch twice", async ()
   assert.equal(result.readySlots, 1);
 });
 
-test("new pending work starts while an earlier drain is active", async () => {
+test("background drains remain capped below the interactive reserve", async () => {
   const result = await getBrowserSuiteResult("pending-overlap");
   assert.deepEqual(result.batchSizes, [1, 1, 1, 1]);
-  assert.equal(result.maxActive, 3);
+  assert.equal(result.maxActive, 2);
   assert.equal(result.pendingQueueSize, 0);
   assert.equal(result.readySlots, 4);
+});
+
+test("small background updates use a bounded trailing merge window", async () => {
+  const result = await getBrowserSuiteResult("trailing-background-batch");
+  assert.deepEqual(result.batchSizes, [3]);
+  assert.ok(result.requestDelayMs >= 750);
+  assert.ok(result.requestDelayMs < 1_350);
+});
+
+test("character budgets are soft for one oversized item", async () => {
+  const result = await getBrowserSuiteResult("character-budget");
+  assert.deepEqual(result.normalChars, [600, 600]);
+  assert.deepEqual(result.oversizedChars, [1200, 100]);
+});
+
+test("new visible pending work is taken before older work at the same priority", async () => {
+  const result = await getBrowserSuiteResult("newest-pending-first");
+  assert.deepEqual(result.order, ["pending-new", "pending-old"]);
 });
 
 test("SPA navigation cancels stale responses and translates the new route", async () => {
@@ -189,7 +233,7 @@ async function runBrowserSuite() {
       harness.reject(new Error(`Chrome exited before returning results (${code ?? signal}).\n${stderr}`));
     });
 
-    const result = await withTimeout(harness.result, 10000, "Timed out waiting for Chrome batch results");
+    const result = await withTimeout(harness.result, 30000, "Timed out waiting for Chrome batch results");
     assert.equal(result.ok, true, result.error || "Browser content suite failed");
     return result.value;
   } finally {
@@ -465,6 +509,58 @@ function createHarnessHtml(routeSources, contentSources) {
         return { batchSizes: translationCalls().map((call) => call.items.length) };
       }
 
+      if (name === "character-budget") {
+        const chars = (length, id) => ({ id, text: "x".repeat(length) });
+        const normal = buildTranslationBatches([
+          chars(300, "one"), chars(300, "two"), chars(300, "three"), chars(300, "four")
+        ], 12, 800);
+        const oversized = buildTranslationBatches([
+          chars(1200, "large"), chars(100, "small")
+        ], 12, 800);
+        return {
+          normalChars: normal.map((batch) => batch.reduce((sum, item) => sum + item.text.length, 0)),
+          oversizedChars: oversized.map((batch) => batch.reduce((sum, item) => sum + item.text.length, 0))
+        };
+      }
+
+      if (name === "newest-pending-first") {
+        setBody(
+          '<main><p id="pending-old">Older visible pending content.</p>' +
+          '<p id="pending-new">Newer visible pending content.</p></main>'
+        );
+        const entries = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        enqueuePendingTranslations([entries[0]], TEST_OPTIONS, { priority: 1 });
+        enqueuePendingTranslations([entries[1]], TEST_OPTIONS, { priority: 1 });
+        const jobs = takePendingTranslationJobs(PIT_STATE.translationEpoch).jobs;
+        const order = jobs.map((job) => job.entry.element.id);
+        jobs.forEach((job) => PIT_STATE.pendingIds.delete(job.entry.id));
+        return { order };
+      }
+
+      if (name === "pipelined-tail") {
+        const paragraphs = Array.from({ length: 45 }, (_, index) =>
+          '<p>Pipeline batch paragraph ' + index + ' remains readable.</p>'
+        ).join("");
+        setBody("<main>" + paragraphs + "</main>");
+        const releases = [];
+        window.__pitRuntime.send = (message) => new Promise((resolve) => {
+          releases.push(() => resolve({
+            ok: true,
+            translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+          }));
+        });
+        const translating = translatePage(TEST_OPTIONS);
+        await waitFor(() => translationCalls().length === 2, 4000, "the pipelined tail request");
+        const tailStartedBeforeFirstResolved = releases.length === 2;
+        window.__pitRuntime.send = window.__pitDefaultSend;
+        releases.splice(0).forEach((release) => release());
+        await translating;
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          tailStartedBeforeFirstResolved
+        };
+      }
+
       if (name === "bounded-tail-concurrency") {
         const paragraphs = Array.from({ length: 128 }, (_, index) =>
           '<p>Concurrent tail paragraph number ' + index + ' is readable.</p>'
@@ -501,6 +597,57 @@ function createHarnessHtml(routeSources, contentSources) {
           requestItems: translationCalls()[0]?.items.length || 0,
           slotParents: slots.map((slot) => slot.parentElement.id),
           translations: slots.map((slot) => slot.textContent)
+        };
+      }
+
+      if (name === "hacker-news-titles") {
+        const testRule = {
+          host: /^127\.0\.0\.1$/,
+          selectors: [".titleline"],
+          skipSelectors: [".rank", ".subtext", ".pagetop"]
+        };
+        PIT_SITE_RULES.unshift(testRule);
+        try {
+          const rows = Array.from({ length: 17 }, (_, index) => (
+            '<tr class="athing"><td class="title"><span class="titleline" id="hn-title-' + index + '">' +
+            '<a href="https://example.com/story-' + index + '">Short readable story number ' + index + '</a>' +
+            '<span class="sitebit comhead"> (<a href="from?site=example.com">example.com</a>)</span>' +
+            '</span></td></tr>'
+          )).join("");
+          setBody('<table><tbody>' + rows + '</tbody></table>');
+          await translatePage(TEST_OPTIONS);
+          return {
+            requestItems: translationCalls().reduce((sum, call) => sum + call.items.length, 0),
+            readySlots: document.querySelectorAll(".titleline + .pit-translation-ready").length,
+            untranslatedTitles: Array.from(document.querySelectorAll(".titleline"))
+              .filter((title) => !title.nextElementSibling?.classList.contains("pit-translation-ready"))
+              .length
+          };
+        } finally {
+          PIT_SITE_RULES.shift();
+        }
+      }
+
+      if (name === "partial-batch-failure") {
+        setBody(
+          '<main><p id="partial-success">This item should remain translated.</p>' +
+          '<p id="partial-failure">This item simulates a missing model result.</p></main>'
+        );
+        window.__pitRuntime.send = async (message) => {
+          const successful = message.items.find((item) => item.text.includes("remain translated"));
+          const failed = message.items.find((item) => item !== successful);
+          return {
+            ok: true,
+            translations: [{ id: successful.id, text: "translated:" + successful.text }],
+            failedIds: [failed.id],
+            error: "batch validation failed"
+          };
+        };
+        await translatePage(TEST_OPTIONS);
+        return {
+          readySlots: document.querySelectorAll(".pit-translation-ready").length,
+          failedSlots: document.querySelectorAll(".pit-translation-failed").length,
+          successText: document.querySelector("#partial-success > .pit-translation-ready")?.textContent || ""
         };
       }
 
@@ -729,11 +876,13 @@ function createHarnessHtml(routeSources, contentSources) {
           enqueuePendingTranslations([entry], TEST_OPTIONS, { priority: 2 });
           return flushPendingTranslationQueue(PIT_STATE.translationEpoch);
         });
-        await waitFor(() => translationCalls().length === 3 && releases.length === 3);
+        await waitFor(() => translationCalls().length === 2 && releases.length === 2);
         await new Promise((resolve) => window.setTimeout(resolve, 30));
         const firstRelease = releases.shift();
         firstRelease();
-        await waitFor(() => translationCalls().length === 4 && releases.length === 3);
+        await waitFor(() => translationCalls().length === 3 && releases.length === 2);
+        releases.splice(0).forEach((release) => release());
+        await waitFor(() => translationCalls().length === 4 && releases.length === 1);
         releases.splice(0).forEach((release) => release());
         await Promise.all(drains);
         return {
@@ -741,6 +890,37 @@ function createHarnessHtml(routeSources, contentSources) {
           maxActive,
           pendingQueueSize: PIT_STATE.pendingQueue.size,
           readySlots: document.querySelectorAll(".pit-translation-ready").length
+        };
+      }
+
+      if (name === "trailing-background-batch") {
+        setBody(
+          '<main><p>First dynamic update becomes part of one background batch.</p>' +
+          '<p>Second dynamic update becomes part of one background batch.</p>' +
+          '<p>Third dynamic update becomes part of one background batch.</p></main>'
+        );
+        const entries = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        let requestStartedAt = 0;
+        window.__pitRuntime.send = async (message) => {
+          requestStartedAt = performance.now();
+          return window.__pitDefaultSend(message);
+        };
+
+        PIT_STATE.cancelRequested = false;
+        const startedAt = performance.now();
+        enqueuePendingTranslations([entries[0]], TEST_OPTIONS, { priority: 1 });
+        schedulePendingTranslationDrain();
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+        enqueuePendingTranslations([entries[1]], TEST_OPTIONS, { priority: 1 });
+        schedulePendingTranslationDrain();
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+        enqueuePendingTranslations([entries[2]], TEST_OPTIONS, { priority: 1 });
+        schedulePendingTranslationDrain();
+        await waitFor(() => translationCalls().length === 1, 2000, "the trailing background batch");
+        await waitFor(() => !PIT_STATE.pendingDraining, 2000, "the trailing background completion");
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          requestDelayMs: Math.round(requestStartedAt - startedAt)
         };
       }
 
@@ -794,8 +974,13 @@ function createHarnessHtml(routeSources, contentSources) {
       const results = {};
       for (const name of [
         "adaptive-batches",
+        "character-budget",
+        "newest-pending-first",
         "bounded-tail-concurrency",
+        "pipelined-tail",
         "duplicate-fanout",
+        "hacker-news-titles",
+        "partial-batch-failure",
         "semantic-inside",
         "replace-restore",
         "delayed-cancel",
@@ -804,6 +989,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "pending-cache",
         "pending-set-dedupe",
         "pending-overlap",
+        "trailing-background-batch",
         "spa-stale-response"
       ]) {
         try {

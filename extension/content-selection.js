@@ -68,6 +68,7 @@ async function translateCurrentSelection() {
     }],
     targetLanguage: settings.targetLanguage,
     endpoint: settings.endpoint,
+    priority: "interactive",
     sourceUrl: location.href
   });
 
@@ -268,4 +269,3 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-

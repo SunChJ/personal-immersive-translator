@@ -30,6 +30,8 @@ test("loaded Chrome extension translates through its real service worker", { tim
     fs.cpSync(BUILT_EXTENSION, extensionDir, { recursive: true });
 
     let translationRequest = null;
+    let translationStreamFinished = false;
+    const translationRequests = [];
     const bridgeRequests = [];
     bridgeServer = http.createServer(async (req, res) => {
       bridgeRequests.push({
@@ -51,14 +53,32 @@ test("loaded Chrome extension translates through its real service worker", { tim
         sendJson(res, { ok: true, name: "Gloss", backend: "test" });
         return;
       }
-      if (req.method === "POST" && req.url === "/translate") {
-        translationRequest = JSON.parse(await readBody(req));
-        sendJson(res, {
-          translations: translationRequest.items.map((item) => ({
-            id: item.id,
-            text: `译文：${item.text}`
-          }))
-        });
+      if (req.method === "POST" && req.url === "/metrics") {
+        await readBody(req);
+        res.writeHead(204).end();
+        return;
+      }
+      if (req.method === "POST" && req.url === "/translate/stream") {
+        const request = JSON.parse(await readBody(req));
+        translationRequests.push(request);
+        translationRequest ||= request;
+        const translations = request.items.map((item) => ({
+          type: "translation",
+          id: item.id,
+          text: `译文：${item.text}`
+        }));
+        res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" });
+        if (!request.requestId.includes("-retry-")) {
+          res.write(`${JSON.stringify(translations[0])}\n`);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          res.write(`${JSON.stringify({ type: "error", error: "batch validation failed" })}\n`);
+          translationStreamFinished = true;
+          res.end();
+          return;
+        }
+        translations.forEach((item) => res.write(`${JSON.stringify(item)}\n`));
+        res.write(`${JSON.stringify({ type: "done", count: translations.length })}\n`);
+        res.end();
         return;
       }
       res.writeHead(404).end();
@@ -142,6 +162,10 @@ test("loaded Chrome extension translates through its real service worker", { tim
     assert.equal(health.ok, true, `${health.error}; permissions=${JSON.stringify(workerPermissions)}`);
 
     await cdp.evaluate("document.querySelector('#pit-floating .pit-fab').click(); true");
+    await waitFor(async () => {
+      return cdp.evaluate("document.querySelectorAll('.pit-translation-ready').length >= 1");
+    });
+    assert.equal(translationStreamFinished, false, "the first item should render before the batch completes");
     let rendered;
     try {
       rendered = await waitFor(async () => {
@@ -170,6 +194,10 @@ test("loaded Chrome extension translates through its real service worker", { tim
 
     assert.ok(translationRequest?.items?.length >= 2);
     assert.equal(translationRequest.targetLanguage, "Chinese (Simplified)");
+    assert.equal(translationRequest.priority, "visible");
+    assert.equal(translationRequests.length, 2, "only the missing item should be retried");
+    assert.equal(translationRequests[1].items.length, 1);
+    assert.match(translationRequests[1].requestId, /-retry-1$/);
     assert.ok(rendered.every((text) => text.startsWith("译文：")));
     assert.ok(
       bridgeRequests
