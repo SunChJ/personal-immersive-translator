@@ -16,21 +16,24 @@ let browserSuitePromise;
 
 installBrowserCleanupHandlers();
 
-test("adaptive batching uses a 6-item first batch and 12-item tail batches", async () => {
+test("adaptive batching uses a 6-item first batch and 8-item tail batches", async () => {
   const result = await getBrowserSuiteResult("adaptive-batches");
-  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 3]);
+  assert.deepEqual(result.batchSizes, [6, 8, 8, 8, 8, 7]);
 });
 
 test("long-page tail reserves one native turn for foreground work", async () => {
   const result = await getBrowserSuiteResult("bounded-tail-concurrency");
-  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 2]);
+  assert.equal(result.batchSizes[0], 6);
+  assert.equal(result.batchSizes.at(-1), 2);
+  assert.ok(result.batchSizes.slice(1, -1).every((size) => size === 8));
+  assert.equal(result.batchSizes.reduce((sum, size) => sum + size, 0), 128);
   assert.equal(result.maxActive, 2);
 });
 
 test("first visible batch pipelines the tail without waiting for completion", async () => {
   const result = await getBrowserSuiteResult("pipelined-tail");
   assert.equal(result.tailStartedBeforeFirstResolved, true);
-  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 3]);
+  assert.deepEqual(result.batchSizes, [6, 8, 8, 8, 8, 7]);
 });
 
 test("duplicate source text is translated into every DOM owner", async () => {
@@ -42,6 +45,13 @@ test("duplicate source text is translated into every DOM owner", async () => {
     "translated:Repeated source paragraph.",
     "translated:Repeated source paragraph."
   ]);
+});
+
+test("a partial batch failure keeps successful items rendered", async () => {
+  const result = await getBrowserSuiteResult("partial-batch-failure");
+  assert.equal(result.readySlots, 1);
+  assert.equal(result.failedSlots, 1);
+  assert.equal(result.successText, "translated:This item should remain translated.");
 });
 
 test("semantic elements receive span translations inside their owner", async () => {
@@ -79,7 +89,10 @@ test("clearing while a response is delayed prevents stale injection", async () =
 test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, async () => {
   const result = await getBrowserSuiteResult("dynamic-80");
   assert.equal(result.readySlots, 80);
-  assert.deepEqual(result.batchSizes, [6, 12, 12, 12, 12, 12, 12, 2]);
+  assert.equal(result.batchSizes[0], 6);
+  assert.equal(result.batchSizes.at(-1), 2);
+  assert.ok(result.batchSizes.slice(1, -1).every((size) => size === 8));
+  assert.equal(result.batchSizes.reduce((sum, size) => sum + size, 0), 80);
   assert.equal(result.queueSize, 0);
   assert.equal(result.running, false);
 });
@@ -580,6 +593,29 @@ function createHarnessHtml(routeSources, contentSources) {
         };
       }
 
+      if (name === "partial-batch-failure") {
+        setBody(
+          '<main><p id="partial-success">This item should remain translated.</p>' +
+          '<p id="partial-failure">This item simulates a missing model result.</p></main>'
+        );
+        window.__pitRuntime.send = async (message) => {
+          const successful = message.items.find((item) => item.text.includes("remain translated"));
+          const failed = message.items.find((item) => item !== successful);
+          return {
+            ok: true,
+            translations: [{ id: successful.id, text: "translated:" + successful.text }],
+            failedIds: [failed.id],
+            error: "batch validation failed"
+          };
+        };
+        await translatePage(TEST_OPTIONS);
+        return {
+          readySlots: document.querySelectorAll(".pit-translation-ready").length,
+          failedSlots: document.querySelectorAll(".pit-translation-failed").length,
+          successText: document.querySelector("#partial-success > .pit-translation-ready")?.textContent || ""
+        };
+      }
+
       if (name === "semantic-inside") {
         setBody(
           '<main><h2 id="heading">A semantic heading for testing.</h2>' +
@@ -908,6 +944,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "bounded-tail-concurrency",
         "pipelined-tail",
         "duplicate-fanout",
+        "partial-batch-failure",
         "semantic-inside",
         "replace-restore",
         "delayed-cancel",

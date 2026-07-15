@@ -31,6 +31,7 @@ test("loaded Chrome extension translates through its real service worker", { tim
 
     let translationRequest = null;
     let translationStreamFinished = false;
+    const translationRequests = [];
     const bridgeRequests = [];
     bridgeServer = http.createServer(async (req, res) => {
       bridgeRequests.push({
@@ -58,18 +59,25 @@ test("loaded Chrome extension translates through its real service worker", { tim
         return;
       }
       if (req.method === "POST" && req.url === "/translate/stream") {
-        translationRequest = JSON.parse(await readBody(req));
-        const translations = translationRequest.items.map((item) => ({
+        const request = JSON.parse(await readBody(req));
+        translationRequests.push(request);
+        translationRequest ||= request;
+        const translations = request.items.map((item) => ({
           type: "translation",
           id: item.id,
           text: `译文：${item.text}`
         }));
         res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" });
-        res.write(`${JSON.stringify(translations[0])}\n`);
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        translations.slice(1).forEach((item) => res.write(`${JSON.stringify(item)}\n`));
+        if (!request.requestId.includes("-retry-")) {
+          res.write(`${JSON.stringify(translations[0])}\n`);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          res.write(`${JSON.stringify({ type: "error", error: "batch validation failed" })}\n`);
+          translationStreamFinished = true;
+          res.end();
+          return;
+        }
+        translations.forEach((item) => res.write(`${JSON.stringify(item)}\n`));
         res.write(`${JSON.stringify({ type: "done", count: translations.length })}\n`);
-        translationStreamFinished = true;
         res.end();
         return;
       }
@@ -187,6 +195,9 @@ test("loaded Chrome extension translates through its real service worker", { tim
     assert.ok(translationRequest?.items?.length >= 2);
     assert.equal(translationRequest.targetLanguage, "Chinese (Simplified)");
     assert.equal(translationRequest.priority, "visible");
+    assert.equal(translationRequests.length, 2, "only the missing item should be retried");
+    assert.equal(translationRequests[1].items.length, 1);
+    assert.match(translationRequests[1].requestId, /-retry-1$/);
     assert.ok(rendered.every((text) => text.startsWith("译文：")));
     assert.ok(
       bridgeRequests

@@ -1,6 +1,7 @@
 importScripts("gloss-config.js", "shared.js");
 
 const TRANSLATE_TIMEOUT_MS = 135000;
+const STREAM_RETRY_BATCH_ITEMS = 4;
 const AUTO_TRANSLATE_DELAY_MS = 700;
 
 const autoTranslateTimers = new Map();
@@ -50,9 +51,12 @@ async function translateBatch(message, sender = {}) {
   const timeout = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
   const startedAt = Date.now();
   let firstRendered = false;
-  const translations = [];
+  const translationsByID = new Map();
+  const requestItems = Array.isArray(message.items)
+    ? message.items
+    : (message.texts || []).map((text, index) => ({ id: `gloss-${index}`, text }));
 
-  try {
+  async function consume(items, bridgeRequestId) {
     const response = await fetch(`${endpoint}/translate/stream`, {
       method: "POST",
       headers: {
@@ -60,12 +64,11 @@ async function translateBatch(message, sender = {}) {
         ...authHeaders(pairingToken)
       },
       body: JSON.stringify({
-        items: message.items,
-        texts: message.texts,
+        items,
         targetLanguage: message.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         priority: normalizeTranslationPriority(message.priority),
         sourceUrl: message.sourceUrl || "",
-        requestId: message.requestId || ""
+        requestId: bridgeRequestId
       }),
       signal: controller.signal
     });
@@ -85,12 +88,17 @@ async function translateBatch(message, sender = {}) {
       if (event.type === "error") {
         throw new Error(event.error || "Translation stream failed.");
       }
-      if (event.type !== "translation" || !event.id || typeof event.text !== "string") {
+      if (
+        event.type !== "translation"
+        || !event.id
+        || typeof event.text !== "string"
+        || translationsByID.has(event.id)
+      ) {
         return;
       }
 
       const translation = { id: event.id, text: event.text };
-      translations.push(translation);
+      translationsByID.set(event.id, translation);
       const rendered = await sendTranslationProgress(sender, message.requestId, translation);
       if (rendered && !firstRendered) {
         firstRendered = true;
@@ -102,7 +110,45 @@ async function translateBatch(message, sender = {}) {
         );
       }
     });
-    return { translations };
+  }
+
+  try {
+    let primaryError = null;
+    try {
+      await consume(requestItems, message.requestId || "");
+    } catch (error) {
+      primaryError = error;
+    }
+
+    let missing = requestItems.filter((item) => !translationsByID.has(item.id));
+    if (primaryError && missing.length > 0) {
+      if (translationsByID.size === 0) {
+        throw primaryError;
+      }
+      let retryError = primaryError;
+      for (let offset = 0; offset < missing.length; offset += STREAM_RETRY_BATCH_ITEMS) {
+        const retryItems = missing.slice(offset, offset + STREAM_RETRY_BATCH_ITEMS);
+        try {
+          await consume(
+            retryItems,
+            `${message.requestId || "translation"}-retry-${Math.floor(offset / STREAM_RETRY_BATCH_ITEMS) + 1}`
+          );
+        } catch (error) {
+          retryError = error;
+        }
+      }
+      missing = requestItems.filter((item) => !translationsByID.has(item.id));
+      return {
+        translations: requestItems.flatMap((item) => translationsByID.has(item.id) ? [translationsByID.get(item.id)] : []),
+        failedIds: missing.map((item) => item.id),
+        error: missing.length > 0 ? retryError.message : ""
+      };
+    }
+
+    if (missing.length > 0) {
+      throw primaryError || new Error(`Translation response missed ${missing.length} item(s).`);
+    }
+    return { translations: requestItems.map((item) => translationsByID.get(item.id)), failedIds: [] };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("Local proxy request timed out.");

@@ -289,14 +289,25 @@ async function translateBlocks(
     }
 
     const remainingBatch = batch.filter((entry) => !renderedIDs.has(entry.id));
-    const remainingIDs = new Set(remainingBatch.map((entry) => entry.id));
-    const remainingTranslations = response.translations.filter((translation) => remainingIDs.has(translation.id));
+    const failedIDs = new Set(response.failedIds || []);
+    const successfulBatch = remainingBatch.filter((entry) => !failedIDs.has(entry.id));
+    const successfulIDs = new Set(successfulBatch.map((entry) => entry.id));
+    const remainingTranslations = response.translations.filter((translation) => successfulIDs.has(translation.id));
     rememberCachedTranslations(
-      remainingBatch,
+      successfulBatch,
       remainingTranslations,
       options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE
     );
-    translatedItems += applyTranslations(remainingBatch, remainingTranslations, mode, bilingualStyle);
+    translatedItems += applyTranslations(successfulBatch, remainingTranslations, mode, bilingualStyle);
+    const failedEntries = batch.filter((entry) => failedIDs.has(entry.id));
+    if (failedEntries.length > 0) {
+      markPendingTranslationSurfacesFailed(
+        failedEntries,
+        mode,
+        options,
+        new Error(response.error || "Translation request partially failed.")
+      );
+    }
     processedItems += batch.length;
     return true;
   }
