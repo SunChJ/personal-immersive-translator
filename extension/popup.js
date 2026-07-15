@@ -17,7 +17,7 @@ const fields = {
   viewportFirst: document.getElementById("viewportFirst"),
   showFloatingButton: document.getElementById("showFloatingButton"),
   translateSelection: document.getElementById("translateSelection"),
-  autoTranslateSite: document.getElementById("autoTranslateSite"),
+  autoTranslateAllPages: document.getElementById("autoTranslateAllPages"),
   translate: document.getElementById("translate"),
   clear: document.getElementById("clear"),
   recheck: document.getElementById("recheck"),
@@ -47,7 +47,6 @@ const BILINGUAL_STYLE_LABELS = {
 
 const styleCards = Array.from(document.querySelectorAll(".style-card[data-style]"));
 const modeButtons = Array.from(document.querySelectorAll(".segmented [data-mode]"));
-let currentSiteHost = "";
 let healthCheckTimer;
 let healthCheckInFlight;
 
@@ -64,7 +63,7 @@ async function init() {
     viewportFirst: true,
     showFloatingButton: true,
     translateSelection: true,
-    autoTranslateSites: {}
+    autoTranslateAllPages: false
   });
 
   setTargetLanguage(saved.targetLanguage);
@@ -79,7 +78,7 @@ async function init() {
   fields.showFloatingButton.checked = saved.showFloatingButton;
   fields.translateSelection.checked = saved.translateSelection;
   updateTranslateSubtitle();
-  await hydrateSiteAutoTranslate(saved.autoTranslateSites);
+  fields.autoTranslateAllPages.checked = saved.autoTranslateAllPages === true;
   await chrome.storage.local.set(readSettings());
 
   fields.translate.addEventListener("click", translateCurrentTab);
@@ -147,7 +146,7 @@ async function init() {
   });
 
   fields.showFloatingButton.addEventListener("change", syncFloatingButton);
-  fields.autoTranslateSite.addEventListener("change", syncAutoTranslateSite);
+  fields.autoTranslateAllPages.addEventListener("change", syncAutoTranslateAllPages);
 
   await checkHealth();
   window.setInterval(checkHealth, 3000);
@@ -170,35 +169,13 @@ async function syncFloatingButton() {
   }
 }
 
-async function hydrateSiteAutoTranslate(autoTranslateSites) {
-  try {
-    const tab = await getActiveTab();
-    currentSiteHost = hostFromUrl(tab.url);
-  } catch {
-    currentSiteHost = "";
-  }
-
-  fields.autoTranslateSite.checked = Boolean(currentSiteHost && autoTranslateSites?.[currentSiteHost]);
-  fields.autoTranslateSite.disabled = !currentSiteHost;
-}
-
-async function syncAutoTranslateSite() {
-  if (!currentSiteHost) {
-    fields.autoTranslateSite.checked = false;
-    return;
-  }
-
-  const { autoTranslateSites = {} } = await chrome.storage.local.get({ autoTranslateSites: {} });
-  const nextSites = { ...autoTranslateSites };
-  if (fields.autoTranslateSite.checked) {
-    nextSites[currentSiteHost] = true;
-    setStatus(`Auto-translate enabled for ${currentSiteHost}.`);
-  } else {
-    delete nextSites[currentSiteHost];
-    setStatus(`Auto-translate disabled for ${currentSiteHost}.`);
-  }
-
-  await chrome.storage.local.set({ autoTranslateSites: nextSites });
+async function syncAutoTranslateAllPages() {
+  await saveSettings();
+  setStatus(
+    fields.autoTranslateAllPages.checked
+      ? "Auto-translate enabled for all websites."
+      : "Auto-translate disabled."
+  );
 }
 
 async function checkHealth() {
@@ -322,6 +299,7 @@ function readSettings() {
     viewportFirst: fields.viewportFirst.checked,
     showFloatingButton: fields.showFloatingButton.checked,
     translateSelection: fields.translateSelection.checked,
+    autoTranslateAllPages: fields.autoTranslateAllPages.checked,
     batchSize: PIT_MAX_BATCH_ITEMS,
     batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4

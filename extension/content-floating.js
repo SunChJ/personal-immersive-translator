@@ -19,14 +19,16 @@ function initFloatingControl() {
         hideSelectionTooltip();
       }
     }
-    if (area === "local" && changes.autoTranslateSites) {
-      syncFloatingAutoTranslateSetting(changes.autoTranslateSites.newValue);
+    if (area === "local" && changes.autoTranslateAllPages) {
+      syncFloatingAutoTranslateSetting(changes.autoTranslateAllPages.newValue);
     }
   });
 }
 
 function setFloatingVisible(visible) {
   if (!visible) {
+    window.clearTimeout(PIT_STATE.floatingStatusTimer);
+    PIT_STATE.floatingStatusTimer = null;
     PIT_STATE.floating?.remove();
     PIT_STATE.floating = null;
     return;
@@ -45,9 +47,9 @@ function mountFloatingControl() {
   root.id = "pit-floating";
   root.dataset.pitSkip = "true";
   root.dataset.expanded = "false";
-  root.dataset.mode = PIT_STATE.translated ? "translated" : "idle";
+  root.dataset.mode = "idle";
   root.innerHTML = `
-    <button class="pit-fab" type="button" title="Left click: translate/original. Right click: menu">
+    <button class="pit-fab" type="button" title="Gloss: ready" aria-label="Gloss: ready">
       <svg class="pit-fab-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M12 4 L20 19 L4 19 Z" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" fill="rgba(255,255,255,0.25)"/>
       </svg>
@@ -64,12 +66,15 @@ function mountFloatingControl() {
         <span class="pit-floating-badge" data-role="badge" data-ok="true">ON</span>
       </div>
       <div class="pit-floating-row" data-action="toggle" role="button" tabindex="0">
-        <span>Translate page</span>
+        <span class="pit-floating-row-copy">
+          <strong>Page translation</strong>
+          <small data-role="modeLabel">Ready</small>
+        </span>
         <span class="pit-toggle" aria-hidden="true"></span>
       </div>
       <label class="pit-floating-check pit-floating-auto">
-        <span>Auto-translate this site</span>
-        <input data-setting="autoTranslateSite" type="checkbox" disabled>
+        <span>Auto-translate all websites</span>
+        <input data-setting="autoTranslateAllPages" type="checkbox" disabled>
       </label>
       <label class="pit-floating-field">
         <span>Target</span>
@@ -126,12 +131,13 @@ function mountFloatingControl() {
           <button type="button" data-action="hide">Hide button</button>
         </div>
       </div>
-      <div class="pit-floating-status">Ready</div>
+      <div class="pit-floating-status" data-role="status" aria-live="polite">Ready</div>
     </div>
   `;
 
   document.documentElement.appendChild(root);
   PIT_STATE.floating = root;
+  updateFloatingState();
   restoreFloatingPosition(root);
   wireFloatingControl(root);
   hydrateFloatingSettings(root);
@@ -250,7 +256,7 @@ function wireFloatingControl(root) {
     }
 
     await saveFloatingSettings(root);
-    if (event.target.dataset.setting === "autoTranslateSite") {
+    if (event.target.dataset.setting === "autoTranslateAllPages") {
       await handleFloatingAutoTranslateChange(root);
     }
   });
@@ -277,9 +283,8 @@ async function hydrateFloatingSettings(root) {
   const clearPrevious = root.querySelector("[data-setting='clearPrevious']");
   const viewportFirst = root.querySelector("[data-setting='viewportFirst']");
   const translateSelection = root.querySelector("[data-setting='translateSelection']");
-  const autoTranslateSite = root.querySelector("[data-setting='autoTranslateSite']");
+  const autoTranslateAllPages = root.querySelector("[data-setting=autoTranslateAllPages]");
   const targetLanguage = normalizeTargetLanguage(settings.targetLanguage);
-  const host = currentAutoTranslateHost();
 
   if (PIT_TARGET_LANGUAGES.includes(targetLanguage)) {
     targetSelect.value = targetLanguage;
@@ -294,9 +299,9 @@ async function hydrateFloatingSettings(root) {
   clearPrevious.checked = settings.clearPrevious !== false;
   viewportFirst.checked = settings.viewportFirst !== false;
   translateSelection.checked = settings.translateSelection !== false;
-  autoTranslateSite.checked = Boolean(host && settings.autoTranslateSites?.[host]);
-  autoTranslateSite.disabled = !host;
-  PIT_STATE.autoTranslateEnabled = autoTranslateSite.checked;
+  autoTranslateAllPages.checked = settings.autoTranslateAllPages === true;
+  autoTranslateAllPages.disabled = false;
+  PIT_STATE.autoTranslateEnabled = autoTranslateAllPages.checked;
   updateFloatingCustomLanguage(root);
   updateFloatingState();
   checkFloatingHealth(root, settings.endpoint);
@@ -304,15 +309,6 @@ async function hydrateFloatingSettings(root) {
 
 async function saveFloatingSettings(root) {
   const current = await readTranslationSettings();
-  const host = currentAutoTranslateHost();
-  const autoTranslateSites = { ...(current.autoTranslateSites || {}) };
-  if (host) {
-    if (root.querySelector("[data-setting='autoTranslateSite']").checked) {
-      autoTranslateSites[host] = true;
-    } else {
-      delete autoTranslateSites[host];
-    }
-  }
 
   await chrome.storage.local.set({
     ...current,
@@ -322,22 +318,22 @@ async function saveFloatingSettings(root) {
     clearPrevious: root.querySelector("[data-setting='clearPrevious']").checked,
     viewportFirst: root.querySelector("[data-setting='viewportFirst']").checked,
     translateSelection: root.querySelector("[data-setting='translateSelection']").checked,
-    autoTranslateSites
+    autoTranslateAllPages: root.querySelector("[data-setting=autoTranslateAllPages]").checked
   });
   setFloatingStatus("Saved");
 }
 
 async function handleFloatingAutoTranslateChange(root) {
-  const enabled = root.querySelector("[data-setting='autoTranslateSite']").checked;
+  const enabled = root.querySelector("[data-setting=autoTranslateAllPages]").checked;
   PIT_STATE.autoTranslateEnabled = enabled;
   updateFloatingState();
   if (!enabled) {
     stopFloatingAutoTranslateSession();
-    setFloatingStatus("Auto translate off");
+    setFloatingStatus("Auto translate off everywhere");
     return;
   }
 
-  setFloatingStatus("Auto translate on");
+  setFloatingStatus("Auto translate on everywhere");
   if (!PIT_STATE.running && !hasPageTranslations()) {
     await translateFromFloating();
   }
@@ -353,11 +349,11 @@ function stopFloatingAutoTranslateSession() {
   updateFloatingState();
 }
 
-function syncFloatingAutoTranslateSetting(autoTranslateSites) {
-  const enabled = Boolean(currentAutoTranslateHost() && autoTranslateSites?.[currentAutoTranslateHost()]);
+function syncFloatingAutoTranslateSetting(autoTranslateAllPages) {
+  const enabled = autoTranslateAllPages === true;
   const wasEnabled = PIT_STATE.autoTranslateEnabled;
   PIT_STATE.autoTranslateEnabled = enabled;
-  const input = PIT_STATE.floating?.querySelector("[data-setting='autoTranslateSite']");
+  const input = PIT_STATE.floating?.querySelector("[data-setting=autoTranslateAllPages]");
   if (input) {
     input.checked = enabled;
   }
@@ -409,8 +405,8 @@ async function checkFloatingHealth(root, endpoint) {
     const model = body.name === "Gloss" ? "Gloss · Codex ready" : prettyModelLabel(body.model);
     serverState.textContent = body.warm === false ? `${model} warming` : model;
     latency.textContent = body.lastLatencyMs ? `${body.lastLatencyMs}ms` : body.warm === false ? "warming" : "--";
-    badge.textContent = PIT_STATE.running ? "BUSY" : PIT_STATE.autoTranslateEnabled ? "AUTO" : "ON";
     badge.dataset.ok = "true";
+    updateFloatingState();
   } catch {
     serverState.textContent = "Not running";
     latency.textContent = "--";
@@ -465,7 +461,7 @@ function readTranslationSettings() {
     clearPrevious: true,
     viewportFirst: true,
     translateSelection: true,
-    autoTranslateSites: {}
+    autoTranslateAllPages: false
   }).then((settings) => ({
     ...settings,
     targetLanguage: normalizeTargetLanguage(settings.targetLanguage),
@@ -473,13 +469,6 @@ function readTranslationSettings() {
     batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
     minChars: 4
   }));
-}
-
-function currentAutoTranslateHost() {
-  if (!["http:", "https:"].includes(location.protocol)) {
-    return "";
-  }
-  return location.hostname.toLowerCase();
 }
 
 function hasPageTranslations() {
@@ -492,34 +481,69 @@ function updateFloatingState(forceMode) {
     return;
   }
 
-  const mode = forceMode || (hasPageTranslations() || PIT_STATE.translated || PIT_STATE.autoTranslateActive ? "translated" : "idle");
+  const mode = forceMode || (
+    PIT_STATE.running
+      ? "running"
+      : hasPageTranslations() || PIT_STATE.translated
+        ? "translated"
+        : PIT_STATE.autoTranslateEnabled && PIT_STATE.autoTranslateActive
+          ? "watching"
+          : "idle"
+  );
+  const details = floatingModeDetails(mode);
   const badge = root.querySelector(".pit-floating-badge");
+  const fab = root.querySelector(".pit-fab");
+  const row = root.querySelector(".pit-floating-row");
+  const modeLabel = root.querySelector("[data-role=modeLabel]");
+  const status = root.querySelector("[data-role=status]");
   root.dataset.mode = mode;
   root.dataset.autoTranslate = String(PIT_STATE.autoTranslateEnabled);
-  if (badge && (mode === "running" || badge.dataset.ok !== "false")) {
-    badge.textContent = mode === "running" ? "BUSY" : PIT_STATE.autoTranslateEnabled ? "AUTO" : "ON";
+  if (badge) {
+    badge.textContent = details.badge;
+  }
+  if (fab) {
+    fab.title = `Gloss: ${details.label.toLowerCase()}`;
+    fab.setAttribute("aria-label", `Gloss: ${details.label}`);
+  }
+  if (row) {
+    row.setAttribute("aria-pressed", String(mode === "translated"));
+  }
+  if (modeLabel) {
+    modeLabel.textContent = details.label;
+  }
+  if (status && PIT_STATE.floatingStatusTimer === null) {
+    status.textContent = details.status;
+  }
+}
+
+function floatingModeDetails(mode) {
+  switch (mode) {
+    case "running":
+      return { badge: "WORKING", label: "Translating", status: "Translating…" };
+    case "watching":
+      return { badge: "AUTO", label: "Watching for content", status: "Auto-translate is on" };
+    case "translated":
+      return { badge: "DONE", label: "Translated", status: "Page translated" };
+    default:
+      return { badge: "READY", label: "Ready", status: "Ready to translate" };
   }
 }
 
 function setFloatingStatus(text) {
-  const status = PIT_STATE.floating?.querySelector(".pit-floating-status");
-  const badge = PIT_STATE.floating?.querySelector(".pit-floating-badge");
-  if (!status && !badge) {
+  const status = PIT_STATE.floating?.querySelector("[data-role=status]");
+  if (!status) {
     return;
   }
 
-  if (status) {
-    status.textContent = text;
-  }
-  if (badge && (PIT_STATE.running || badge.dataset.ok !== "false")) {
-    badge.textContent = PIT_STATE.running ? "BUSY" : PIT_STATE.autoTranslateEnabled ? "AUTO" : "ON";
-  }
+  status.textContent = text;
   window.clearTimeout(PIT_STATE.floatingStatusTimer);
   PIT_STATE.floatingStatusTimer = window.setTimeout(() => {
+    PIT_STATE.floatingStatusTimer = null;
     if (status?.textContent === text) {
-      status.textContent = "Ready";
+      updateFloatingState();
     }
   }, 4500);
+  updateFloatingState();
 }
 
 function restoreFloatingPosition(root) {

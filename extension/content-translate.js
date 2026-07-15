@@ -11,6 +11,7 @@ async function translatePage(options) {
     PIT_STATE.autoTranslateEnabled = true;
   }
   injectStyles();
+  updateFloatingState("running");
 
   try {
     if (options.clearPrevious) {
@@ -106,6 +107,7 @@ async function translatePage(options) {
     throw error;
   } finally {
     PIT_STATE.running = false;
+    updateFloatingState();
     schedulePendingTranslationDrain();
   }
 }

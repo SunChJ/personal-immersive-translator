@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const BACKGROUND_PATH = path.join(__dirname, "..", "extension", "background.js");
 const AUTO_TRANSLATE_SETTINGS = {
-  autoTranslateSites: { "example.com": true },
+  autoTranslateAllPages: true,
   targetLanguage: "Chinese (Simplified)",
   endpoint: "http://127.0.0.1:8787",
   mode: "bilingual",
@@ -17,7 +17,7 @@ const AUTO_TRANSLATE_SETTINGS = {
   translateSelection: true
 };
 
-test("auto-translate keeps one job per navigation and drops a stale refresh retry", async () => {
+test("global auto-translate keeps one job per navigation and drops a stale refresh retry", async () => {
   const runtime = createBackgroundRuntime();
   const url = "https://example.com/article";
 
@@ -45,7 +45,38 @@ test("auto-translate keeps one job per navigation and drops a stale refresh retr
   assert.equal(runtime.sentMessages.length, 2, "the stale navigation must not retry into the refreshed page");
 });
 
-function createBackgroundRuntime() {
+test("global auto-translate schedules every website but skips browser pages", async () => {
+  const runtime = createBackgroundRuntime();
+  const firstUrl = "https://example.com/article";
+  const secondUrl = "https://another.example/guide";
+
+  runtime.updated(1, { status: "complete" }, { url: firstUrl });
+  runtime.updated(2, { status: "complete" }, { url: secondUrl });
+  runtime.updated(3, { status: "complete" }, { url: "chrome://settings" });
+  await flushTasks();
+
+  assert.equal(runtime.timerCount(), 2);
+  await runtime.runNextTimer();
+  await runtime.runNextTimer();
+  assert.deepEqual(
+    runtime.sentMessages.map(({ tabId }) => tabId).sort(),
+    [1, 2]
+  );
+});
+
+test("global auto-translate stays off when only a legacy site preference exists", async () => {
+  const runtime = createBackgroundRuntime({
+    ...AUTO_TRANSLATE_SETTINGS,
+    autoTranslateAllPages: false,
+    autoTranslateSites: { "example.com": true }
+  });
+
+  runtime.updated(1, { status: "complete" }, { url: "https://example.com/article" });
+  await flushTasks();
+  assert.equal(runtime.timerCount(), 0);
+});
+
+function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
   const listeners = {};
   const timers = new Map();
   const sentMessages = [];
@@ -71,7 +102,7 @@ function createBackgroundRuntime() {
       },
       storage: {
         local: {
-          get: async () => AUTO_TRANSLATE_SETTINGS
+          get: async () => settings
         }
       },
       tabs: {

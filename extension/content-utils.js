@@ -43,26 +43,13 @@ function isMostlyPunctuation(text) {
 function applyInheritedTextStyle(sourceElement, translationElement, precomputedStyle) {
   const style = precomputedStyle || window.getComputedStyle(sourceElement);
   translationElement.style.fontFamily = `${style.fontFamily}, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif`;
-  translationElement.style.fontSize = readableTranslationFontSize(sourceElement, style);
+  translationElement.style.fontSize = style.fontSize;
   translationElement.style.fontWeight = style.fontWeight;
   translationElement.style.fontStyle = style.fontStyle;
   translationElement.style.lineHeight = style.lineHeight;
   translationElement.style.letterSpacing = style.letterSpacing;
   translationElement.style.textAlign = style.textAlign;
   translationElement.style.color = style.color;
-}
-
-function readableTranslationFontSize(sourceElement, style) {
-  const sourceSize = Number.parseFloat(style.fontSize);
-  if (!Number.isFinite(sourceSize)) {
-    return style.fontSize;
-  }
-
-  if (sourceElement.matches("h1, h2, h3, h4, h5, h6")) {
-    return `${Math.max(18, Math.min(sourceSize * 0.72, 34))}px`;
-  }
-
-  return style.fontSize;
 }
 
 function ensurePitId(element) {
@@ -96,4 +83,3 @@ function nextAnimationFrame() {
     window.requestAnimationFrame(() => resolve());
   });
 }
-

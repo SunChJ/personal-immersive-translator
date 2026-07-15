@@ -71,6 +71,14 @@ test("semantic elements receive span translations inside their owner", async () 
   });
 });
 
+test("bilingual translations keep their source font size", async () => {
+  const result = await getBrowserSuiteResult("font-size-inheritance");
+  assert.deepEqual(result, {
+    heading: { source: "53px", translation: "53px" },
+    paragraph: { source: "19px", translation: "19px" }
+  });
+});
+
 test("replace mode preserves original nodes and clear restores them", async () => {
   const result = await getBrowserSuiteResult("replace-restore");
   assert.equal(result.connectedDuringReplace, true);
@@ -155,10 +163,12 @@ test("one pending batch keeps visible reading order", async () => {
   assert.deepEqual(result.order, ["pending-top", "pending-middle", "pending-bottom"]);
 });
 
-test("floating auto-translate starts the current page immediately", async () => {
+test("floating global auto-translate starts the current page immediately", async () => {
   const result = await getBrowserSuiteResult("floating-auto-translate");
   assert.equal(result.topLevelControl, true);
-  assert.equal(result.enabledForSite, true);
+  assert.equal(result.enabledGlobally, true);
+  assert.deepEqual(result.runningState, { mode: "running", badge: "WORKING", label: "Translating" });
+  assert.deepEqual(result.completeState, { mode: "translated", badge: "DONE", label: "Translated" });
   assert.equal(result.requestItems, 1);
   assert.equal(result.readySlots, 1);
   assert.equal(result.disabledStopsUpdates, true, JSON.stringify(result));
@@ -447,7 +457,7 @@ function createHarnessHtml(routeSources, contentSources) {
     window.__pitStorage = {
       showFloatingButton: false,
       translateSelection: false,
-      autoTranslateSites: {}
+      autoTranslateAllPages: false
     };
     window.__pitRuntime = {
       listener: null,
@@ -578,13 +588,33 @@ function createHarnessHtml(routeSources, contentSources) {
 
       if (name === "floating-auto-translate") {
         setBody('<main><p id="auto-owner">Translate this page as soon as auto mode is enabled.</p></main>');
-        window.__pitStorage.autoTranslateSites = {};
+        window.__pitStorage.autoTranslateAllPages = false;
+        let releaseTranslation;
+        window.__pitRuntime.send = (message) => {
+          if (message.type !== "translate-batch") {
+            return window.__pitDefaultSend(message);
+          }
+          return new Promise((resolve) => {
+            releaseTranslation = () => resolve({
+              ok: true,
+              translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+            });
+          });
+        };
         setFloatingVisible(true);
-        const input = document.querySelector("#pit-floating [data-setting='autoTranslateSite']");
-        await waitFor(() => input && !input.disabled, 2000, "the floating auto-translate control");
+        const input = document.querySelector("#pit-floating [data-setting=autoTranslateAllPages]");
+        await waitFor(() => input && !input.disabled, 2000, "the global auto-translate control");
         const topLevelControl = !input.closest(".pit-floating-advanced");
         input.checked = true;
         input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(() => typeof releaseTranslation === "function", 4000, "the automatic translation request");
+        const floating = document.getElementById("pit-floating");
+        const runningState = {
+          mode: floating.dataset.mode,
+          badge: floating.querySelector(".pit-floating-badge").textContent,
+          label: floating.querySelector("[data-role=modeLabel]").textContent
+        };
+        releaseTranslation();
         await waitFor(
           () => document.querySelectorAll("#auto-owner > .pit-translation-ready").length === 1,
           4000,
@@ -592,7 +622,13 @@ function createHarnessHtml(routeSources, contentSources) {
         );
         const result = {
           topLevelControl,
-          enabledForSite: Boolean(window.__pitStorage.autoTranslateSites?.[location.hostname]),
+          enabledGlobally: window.__pitStorage.autoTranslateAllPages === true,
+          runningState,
+          completeState: {
+            mode: floating.dataset.mode,
+            badge: floating.querySelector(".pit-floating-badge").textContent,
+            label: floating.querySelector("[data-role=modeLabel]").textContent
+          },
           requestItems: translationCalls().reduce((sum, call) => sum + call.items.length, 0),
           readySlots: document.querySelectorAll("#auto-owner > .pit-translation-ready").length
         };
@@ -600,7 +636,7 @@ function createHarnessHtml(routeSources, contentSources) {
         input.dispatchEvent(new Event("change", { bubbles: true }));
         await waitFor(
           () => (
-            !window.__pitStorage.autoTranslateSites?.[location.hostname]
+            window.__pitStorage.autoTranslateAllPages === false
             && !PIT_STATE.dynamicObserver
           ),
           2000,
@@ -767,6 +803,26 @@ function createHarnessHtml(routeSources, contentSources) {
           paragraph: describe("paragraph"),
           quote: describe("quote"),
           summary: describe("summary")
+        };
+      }
+
+      if (name === "font-size-inheritance") {
+        setBody(
+          '<main><h1 id="font-heading" style="font-size: 53px">A large heading retains its size.</h1>' +
+          '<p id="font-paragraph" style="font-size: 19px">A paragraph retains its size too.</p></main>'
+        );
+        await translatePage(TEST_OPTIONS);
+        const describe = (id) => {
+          const owner = document.getElementById(id);
+          const slot = owner.querySelector(":scope > .pit-translation-ready");
+          return {
+            source: window.getComputedStyle(owner).fontSize,
+            translation: window.getComputedStyle(slot).fontSize
+          };
+        };
+        return {
+          heading: describe("font-heading"),
+          paragraph: describe("font-paragraph")
         };
       }
 
@@ -1083,6 +1139,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "hacker-news-titles",
         "partial-batch-failure",
         "semantic-inside",
+        "font-size-inheritance",
         "replace-restore",
         "delayed-cancel",
         "dynamic-80",

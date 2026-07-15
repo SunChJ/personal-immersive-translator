@@ -241,13 +241,12 @@ async function checkHealth(message) {
 }
 
 async function scheduleAutoTranslate(tabId, url) {
-  const host = hostFromUrl(url);
-  if (!host) {
+  if (!isWebPageUrl(url)) {
     return;
   }
 
   const settings = await chrome.storage.local.get(defaultTranslationSettings());
-  if (!settings.autoTranslateSites?.[host]) {
+  if (settings.autoTranslateAllPages !== true) {
     return;
   }
 
@@ -267,7 +266,14 @@ async function scheduleAutoTranslate(tabId, url) {
     }
 
     try {
-      await sendAutoTranslateMessage(tabId, url, settings, job);
+      const currentSettings = await chrome.storage.local.get(defaultTranslationSettings());
+      if (!currentSettings.autoTranslateAllPages || !isCurrentAutoTranslateJob(tabId, job)) {
+        if (isCurrentAutoTranslateJob(tabId, job)) {
+          autoTranslateJobs.delete(tabId);
+        }
+        return;
+      }
+      await sendAutoTranslateMessage(tabId, url, currentSettings, job);
     } catch {
       if (isCurrentAutoTranslateJob(tabId, job)) {
         autoTranslateJobs.delete(tabId);
@@ -343,6 +349,15 @@ function isCurrentAutoTranslateJob(tabId, job) {
   return autoTranslateJobs.get(tabId) === job;
 }
 
+function isWebPageUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function defaultTranslationSettings() {
   return {
     targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
@@ -353,7 +368,7 @@ function defaultTranslationSettings() {
     viewportFirst: true,
     showFloatingButton: true,
     translateSelection: true,
-    autoTranslateSites: {}
+    autoTranslateAllPages: false
   };
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-07-15
+
+- Replaced per-site auto-translation with one global setting that automatically translates every supported website after it loads.
+- Made the floating control show distinct ready, working, automatic, and completed states, with clearer status text and visual feedback.
+- Kept bilingual translations at the original element's computed font size, including headings.
+
 ## 0.4.0 - 2026-07-14
 
 - Added WXT as the shared Chrome and Safari build layer while preserving the existing extension runtime.
