@@ -7,6 +7,9 @@ async function translatePage(options) {
   }
 
   PIT_STATE.running = true;
+  if (options.autoTranslate) {
+    PIT_STATE.autoTranslateEnabled = true;
+  }
   injectStyles();
 
   try {
@@ -32,7 +35,7 @@ async function translatePage(options) {
     const orderedBlocks = prioritizeBlocks(blocks, options.viewportFirst !== false);
 
     if (orderedBlocks.length === 0) {
-      if (options.preserveDynamicObserver) {
+      if (options.autoTranslate || options.preserveDynamicObserver) {
         PIT_STATE.autoTranslateActive = true;
         startDynamicTranslationObserver(options);
         PIT_STATE.dynamicRoots = [document.body];
@@ -383,9 +386,10 @@ function enqueuePendingTranslations(entries, options, { force = false, priority 
   const mode = options.mode || "bilingual";
   const bilingualStyle = normalizeBilingualStyle(options.bilingualStyle);
   const targetLanguage = options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE;
+  const batchSequence = PIT_STATE.nextPendingBatchSequence++;
   let cached = 0;
 
-  entries.forEach((entry) => {
+  entries.forEach((entry, entryIndex) => {
     if (!entry.element.isConnected || PIT_STATE.pendingIds.has(entry.id) || (!force && hasExistingTranslation(entry))) {
       return;
     }
@@ -403,7 +407,8 @@ function enqueuePendingTranslations(entries, options, { force = false, priority 
       options,
       priority,
       translationEpoch,
-      sequence: PIT_STATE.nextPendingSequence++
+      batchSequence,
+      entryIndex
     });
   });
 
@@ -446,7 +451,8 @@ function takePendingTranslationJobs(translationEpoch) {
     .sort((left, right) => (
       right.priority - left.priority
       || pendingEntryDistance(left.entry) - pendingEntryDistance(right.entry)
-      || right.sequence - left.sequence
+      || right.batchSequence - left.batchSequence
+      || left.entryIndex - right.entryIndex
     ));
   const jobs = [];
   let configKey = "";

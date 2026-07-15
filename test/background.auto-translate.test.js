@@ -26,6 +26,7 @@ test("auto-translate keeps one job per navigation and drops a stale refresh retr
   await flushTasks();
   await runtime.runNextTimer();
   assert.equal(runtime.sentMessages.length, 1);
+  assert.equal(runtime.sentMessages[0].message.options.autoTranslate, true);
 
   runtime.updated(1, { status: "complete" }, { url });
   assert.equal(runtime.timerCount(), 0, "a running job must not be scheduled again");

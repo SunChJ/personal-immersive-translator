@@ -150,6 +150,26 @@ test("new visible pending work is taken before older work at the same priority",
   assert.deepEqual(result.order, ["pending-new", "pending-old"]);
 });
 
+test("one pending batch keeps visible reading order", async () => {
+  const result = await getBrowserSuiteResult("pending-batch-order");
+  assert.deepEqual(result.order, ["pending-top", "pending-middle", "pending-bottom"]);
+});
+
+test("floating auto-translate starts the current page immediately", async () => {
+  const result = await getBrowserSuiteResult("floating-auto-translate");
+  assert.equal(result.topLevelControl, true);
+  assert.equal(result.enabledForSite, true);
+  assert.equal(result.requestItems, 1);
+  assert.equal(result.readySlots, 1);
+  assert.equal(result.disabledStopsUpdates, true, JSON.stringify(result));
+});
+
+test("auto-translate waits for a client-rendered page body", async () => {
+  const result = await getBrowserSuiteResult("auto-translate-late-content");
+  assert.equal(result.initialTotal, 0);
+  assert.equal(result.readySlots, 1);
+});
+
 test("SPA navigation cancels stale responses and translates the new route", async () => {
   const result = await getBrowserSuiteResult("spa-stale-response");
   assert.equal(result.cancelled, true);
@@ -424,6 +444,11 @@ function createHarnessHtml(routeSources, contentSources) {
       ok: true,
       translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
     });
+    window.__pitStorage = {
+      showFloatingButton: false,
+      translateSelection: false,
+      autoTranslateSites: {}
+    };
     window.__pitRuntime = {
       listener: null,
       send: window.__pitDefaultSend
@@ -441,17 +466,17 @@ function createHarnessHtml(routeSources, contentSources) {
       storage: {
         local: {
           get(defaults, callback) {
-            const values = Object.assign({}, defaults, {
-              showFloatingButton: false,
-              translateSelection: false
-            });
+            const values = Object.assign({}, defaults, window.__pitStorage);
             if (callback) {
               queueMicrotask(() => callback(values));
               return undefined;
             }
             return Promise.resolve(values);
           },
-          set() { return Promise.resolve(); }
+          set(values) {
+            Object.assign(window.__pitStorage, values);
+            return Promise.resolve();
+          }
         },
         onChanged: { addListener() {} }
       }
@@ -535,6 +560,79 @@ function createHarnessHtml(routeSources, contentSources) {
         const order = jobs.map((job) => job.entry.element.id);
         jobs.forEach((job) => PIT_STATE.pendingIds.delete(job.entry.id));
         return { order };
+      }
+
+      if (name === "pending-batch-order") {
+        setBody(
+          '<main><p id="pending-top">Top visible pending content.</p>' +
+          '<p id="pending-middle">Middle visible pending content.</p>' +
+          '<p id="pending-bottom">Bottom visible pending content.</p></main>'
+        );
+        const entries = collectTranslationBlocks(document.body, TEST_OPTIONS);
+        enqueuePendingTranslations(entries, TEST_OPTIONS, { priority: 1 });
+        const jobs = takePendingTranslationJobs(PIT_STATE.translationEpoch).jobs;
+        const order = jobs.map((job) => job.entry.element.id);
+        jobs.forEach((job) => PIT_STATE.pendingIds.delete(job.entry.id));
+        return { order };
+      }
+
+      if (name === "floating-auto-translate") {
+        setBody('<main><p id="auto-owner">Translate this page as soon as auto mode is enabled.</p></main>');
+        window.__pitStorage.autoTranslateSites = {};
+        setFloatingVisible(true);
+        const input = document.querySelector("#pit-floating [data-setting='autoTranslateSite']");
+        await waitFor(() => input && !input.disabled, 2000, "the floating auto-translate control");
+        const topLevelControl = !input.closest(".pit-floating-advanced");
+        input.checked = true;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => document.querySelectorAll("#auto-owner > .pit-translation-ready").length === 1,
+          4000,
+          "the automatic current-page translation"
+        );
+        const result = {
+          topLevelControl,
+          enabledForSite: Boolean(window.__pitStorage.autoTranslateSites?.[location.hostname]),
+          requestItems: translationCalls().reduce((sum, call) => sum + call.items.length, 0),
+          readySlots: document.querySelectorAll("#auto-owner > .pit-translation-ready").length
+        };
+        input.checked = false;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(
+          () => (
+            !window.__pitStorage.autoTranslateSites?.[location.hostname]
+            && !PIT_STATE.dynamicObserver
+          ),
+          2000,
+          "auto-translate to be disabled"
+        );
+        const lateParagraph = document.createElement("p");
+        lateParagraph.id = "disabled-auto-owner";
+        lateParagraph.textContent = "This later content must wait for a manual translation.";
+        document.querySelector("main").appendChild(lateParagraph);
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        result.disabledStopsUpdates = !document.querySelector("#disabled-auto-owner > .pit-translation-ready");
+        PIT_STATE.autoTranslateEnabled = false;
+        setFloatingVisible(false);
+        return result;
+      }
+
+      if (name === "auto-translate-late-content") {
+        setBody('<main id="late-content"></main>');
+        const initial = await translatePage({ ...TEST_OPTIONS, autoTranslate: true });
+        const paragraph = document.createElement("p");
+        paragraph.id = "late-auto-owner";
+        paragraph.textContent = "Client-rendered content should be translated when it appears.";
+        document.querySelector("#late-content").appendChild(paragraph);
+        await waitFor(
+          () => document.querySelectorAll("#late-auto-owner > .pit-translation-ready").length === 1,
+          4000,
+          "the late auto-translated content"
+        );
+        return {
+          initialTotal: initial.total,
+          readySlots: document.querySelectorAll("#late-auto-owner > .pit-translation-ready").length
+        };
       }
 
       if (name === "pipelined-tail") {
@@ -976,6 +1074,9 @@ function createHarnessHtml(routeSources, contentSources) {
         "adaptive-batches",
         "character-budget",
         "newest-pending-first",
+        "pending-batch-order",
+        "floating-auto-translate",
+        "auto-translate-late-content",
         "bounded-tail-concurrency",
         "pipelined-tail",
         "duplicate-fanout",
