@@ -192,6 +192,12 @@ function measureLog(log) {
         durationMs: Number(event.values.duration_ms || 0),
         queueWaitMs: Number(event.values.queue_wait_ms || 0),
         turnWaitMs: Number(event.values.turn_wait_ms || 0),
+        turnDispatchMs: Number(event.values.turn_dispatch_ms || 0),
+        modelWaitMs: Number(event.values.model_wait_ms || 0),
+        firstDeltaWaitMs: Number(event.values.first_delta_wait_ms || 0),
+        outputStreamMs: Number(event.values.output_stream_ms || 0),
+        messageFinalizeMs: Number(event.values.message_finalize_ms || 0),
+        turnFinalizeMs: Number(event.values.turn_finalize_ms || 0),
         parseMs: Number(event.values.parse_ms || 0),
         rollbackMs: Number(event.values.rollback_ms || 0)
       }))

@@ -47,6 +47,13 @@ test("duplicate source text is translated into every DOM owner", async () => {
   ]);
 });
 
+test("Hacker News title rows are not mistaken for navigation", async () => {
+  const result = await getBrowserSuiteResult("hacker-news-titles");
+  assert.equal(result.requestItems, 17);
+  assert.equal(result.readySlots, 17);
+  assert.equal(result.untranslatedTitles, 0);
+});
+
 test("a partial batch failure keeps successful items rendered", async () => {
   const result = await getBrowserSuiteResult("partial-batch-failure");
   assert.equal(result.readySlots, 1);
@@ -593,6 +600,34 @@ function createHarnessHtml(routeSources, contentSources) {
         };
       }
 
+      if (name === "hacker-news-titles") {
+        const testRule = {
+          host: /^127\.0\.0\.1$/,
+          selectors: [".titleline"],
+          skipSelectors: [".rank", ".subtext", ".pagetop"]
+        };
+        PIT_SITE_RULES.unshift(testRule);
+        try {
+          const rows = Array.from({ length: 17 }, (_, index) => (
+            '<tr class="athing"><td class="title"><span class="titleline" id="hn-title-' + index + '">' +
+            '<a href="https://example.com/story-' + index + '">Short readable story number ' + index + '</a>' +
+            '<span class="sitebit comhead"> (<a href="from?site=example.com">example.com</a>)</span>' +
+            '</span></td></tr>'
+          )).join("");
+          setBody('<table><tbody>' + rows + '</tbody></table>');
+          await translatePage(TEST_OPTIONS);
+          return {
+            requestItems: translationCalls().reduce((sum, call) => sum + call.items.length, 0),
+            readySlots: document.querySelectorAll(".titleline + .pit-translation-ready").length,
+            untranslatedTitles: Array.from(document.querySelectorAll(".titleline"))
+              .filter((title) => !title.nextElementSibling?.classList.contains("pit-translation-ready"))
+              .length
+          };
+        } finally {
+          PIT_SITE_RULES.shift();
+        }
+      }
+
       if (name === "partial-batch-failure") {
         setBody(
           '<main><p id="partial-success">This item should remain translated.</p>' +
@@ -944,6 +979,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "bounded-tail-concurrency",
         "pipelined-tail",
         "duplicate-fanout",
+        "hacker-news-titles",
         "partial-batch-failure",
         "semantic-inside",
         "replace-restore",

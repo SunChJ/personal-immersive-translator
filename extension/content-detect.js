@@ -624,6 +624,9 @@ function isLikelyChromeText(element, text, measurements) {
   if (siteRule?.skipSelectors.some((selector) => element.closest(selector))) {
     return true;
   }
+  if (siteRule?.selectors.some((selector) => element.matches(selector))) {
+    return false;
+  }
 
   if (/^news\.ycombinator\.com$/i.test(location.hostname) && element.querySelector?.(".pagetop, .subtext, .yclinks")) {
     return true;
