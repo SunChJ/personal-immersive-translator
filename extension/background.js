@@ -7,13 +7,18 @@ const AUTO_TRANSLATE_DELAY_MS = 700;
 const autoTranslateTimers = new Map();
 const autoTranslateJobs = new Map();
 const autoTranslateGenerations = new Map();
+const activeTranslationRequests = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !["translate-batch", "check-health"].includes(message.type)) {
+  if (!message || !["translate-batch", "cancel-translation", "check-health"].includes(message.type)) {
     return false;
   }
 
-  const task = message.type === "translate-batch" ? translateBatch(message, sender) : checkHealth(message);
+  const task = message.type === "translate-batch"
+    ? translateBatch(message, sender)
+    : message.type === "cancel-translation"
+      ? cancelTranslation(message)
+      : checkHealth(message);
   task
     .then((payload) => sendResponse({ ok: true, ...payload }))
     .catch((error) => {
@@ -46,9 +51,21 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 async function translateBatch(message, sender = {}) {
   const endpoint = normalizeEndpoint(message.endpoint);
-  const pairingToken = await readPairingToken();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
+  const requestId = String(message.requestId || "").trim();
+  const requestState = {
+    controller,
+    cancelled: false,
+    bridgeRequestIds: new Set()
+  };
+  if (requestId) {
+    activeTranslationRequests.get(requestId)?.controller.abort();
+    activeTranslationRequests.set(requestId, requestState);
+  }
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, TRANSLATE_TIMEOUT_MS);
+  const pairingToken = await readPairingToken();
   const startedAt = Date.now();
   let firstRendered = false;
   const translationsByID = new Map();
@@ -57,6 +74,9 @@ async function translateBatch(message, sender = {}) {
     : (message.texts || []).map((text, index) => ({ id: `gloss-${index}`, text }));
 
   async function consume(items, bridgeRequestId) {
+    if (bridgeRequestId) {
+      requestState.bridgeRequestIds.add(bridgeRequestId);
+    }
     const response = await fetch(`${endpoint}/translate/stream`, {
       method: "POST",
       headers: {
@@ -151,11 +171,53 @@ async function translateBatch(message, sender = {}) {
     return { translations: requestItems.map((item) => translationsByID.get(item.id)), failedIds: [] };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Local proxy request timed out.");
+      throw new Error(requestState.cancelled ? "Translation cancelled." : "Local proxy request timed out.");
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    if (requestId && activeTranslationRequests.get(requestId) === requestState) {
+      activeTranslationRequests.delete(requestId);
+    }
+  }
+}
+
+async function cancelTranslation(message) {
+  const requestIds = Array.from(new Set(
+    (Array.isArray(message.requestIds) ? message.requestIds : [message.requestId])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  ));
+  let cancelled = 0;
+  const bridgeRequestIds = new Set(requestIds);
+  requestIds.forEach((requestId) => {
+    const request = activeTranslationRequests.get(requestId);
+    if (!request) {
+      return;
+    }
+    request.cancelled = true;
+    request.controller.abort();
+    request.bridgeRequestIds.forEach((bridgeRequestId) => bridgeRequestIds.add(bridgeRequestId));
+    cancelled += 1;
+  });
+  if (requestIds.length === 0) {
+    return { cancelled, forwarded: false };
+  }
+
+  try {
+    const endpoint = normalizeEndpoint(message.endpoint);
+    const pairingToken = await readPairingToken();
+    const response = await fetchWithTimeout(`${endpoint}/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(pairingToken)
+      },
+      body: JSON.stringify({ requestIds: Array.from(bridgeRequestIds) })
+    }, PIT_HEALTH_TIMEOUT_MS);
+    return { cancelled, forwarded: response.ok };
+  } catch {
+    return { cancelled, forwarded: false };
   }
 }
 

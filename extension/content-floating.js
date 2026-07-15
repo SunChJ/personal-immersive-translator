@@ -342,6 +342,7 @@ async function handleFloatingAutoTranslateChange(root) {
 function stopFloatingAutoTranslateSession() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  cancelActiveTranslationRequests();
   PIT_STATE.autoTranslateActive = false;
   clearPendingTranslationQueue();
   stopDynamicTranslationObserver();

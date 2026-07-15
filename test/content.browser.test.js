@@ -99,6 +99,7 @@ test("clearing while a response is delayed prevents stale injection", async () =
   assert.equal(result.readySlots, 0);
   assert.equal(result.pendingSlots, 0);
   assert.equal(result.translatedFlag, "false");
+  assert.equal(result.cancelledRequestIds.length, 1);
 });
 
 test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, async () => {
@@ -457,6 +458,7 @@ function createHarnessHtml(routeSources, contentSources) {
   ${scriptTags(routeSources)}
   <script>
     window.__pitCalls = [];
+    window.__pitCancelledRequests = [];
     window.__pitDefaultSend = async (message) => ({
       ok: true,
       translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
@@ -487,6 +489,10 @@ function createHarnessHtml(routeSources, contentSources) {
           window.__pitCalls.push(message);
           if (message.type === "check-health") {
             return Promise.resolve({ ok: true, health: { ...window.__pitHealth } });
+          }
+          if (message.type === "cancel-translation") {
+            window.__pitCancelledRequests.push(...message.requestIds);
+            return Promise.resolve({ ok: true, cancelled: message.requestIds.length, forwarded: true });
           }
           return window.__pitRuntime.send(message);
         }
@@ -903,6 +909,7 @@ function createHarnessHtml(routeSources, contentSources) {
           pendingSpinnerCount,
           pendingSlots: document.querySelectorAll(".pit-translation-pending").length,
           readySlots: document.querySelectorAll(".pit-translation-ready").length,
+          cancelledRequestIds: [...window.__pitCancelledRequests],
           translatedFlag: owner.dataset.pitTranslated || "false"
         };
       }

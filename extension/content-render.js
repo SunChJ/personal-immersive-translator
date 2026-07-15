@@ -385,6 +385,7 @@ function restoreAllReplaceTranslations() {
 function clearTranslations() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  cancelActiveTranslationRequests();
   clearPendingTranslationQueue();
   stopDynamicTranslationObserver();
   stopLazyTranslationObserver();

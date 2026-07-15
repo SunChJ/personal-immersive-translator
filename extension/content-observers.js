@@ -333,6 +333,7 @@ function isAutoTranslationActive() {
 function resetTranslationArtifactsForAutoUpdate() {
   PIT_STATE.translationEpoch += 1;
   PIT_STATE.cancelRequested = true;
+  cancelActiveTranslationRequests();
   clearPendingTranslationQueue();
   PIT_STATE.dynamicQueue.clear();
   PIT_STATE.dynamicRoots = [];

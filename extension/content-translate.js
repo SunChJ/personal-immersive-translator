@@ -3,6 +3,7 @@ async function translatePage(options) {
   if (PIT_STATE.running) {
     PIT_STATE.cancelRequested = true;
     PIT_STATE.translationEpoch += 1;
+    cancelActiveTranslationRequests();
     throw new Error("A translation is already running. Click again after it stops.");
   }
 
@@ -233,6 +234,10 @@ async function translateBlocks(
     const requestId = `${PIT_STATE.sessionId}-${translationEpoch}-${PIT_STATE.nextStreamRequestId++}`;
     const entriesByID = new Map(batch.map((entry) => [entry.id, entry]));
     const renderedIDs = new Set();
+    PIT_STATE.translationRequestEndpoints.set(
+      requestId,
+      options.endpoint || PIT_DEFAULT_ENDPOINT
+    );
     PIT_STATE.translationStreams.set(requestId, (translation) => {
       if (
         location.href !== sourceUrl
@@ -280,6 +285,7 @@ async function translateBlocks(
       });
     } finally {
       PIT_STATE.translationStreams.delete(requestId);
+      PIT_STATE.translationRequestEndpoints.delete(requestId);
       releaseBatchRequestSlot();
     }
     if (location.href !== sourceUrl) {
@@ -600,6 +606,34 @@ function clearPendingTranslationQueue() {
   });
   PIT_STATE.pendingQueue.clear();
   PIT_STATE.pendingIds.clear();
+}
+
+function cancelTranslationRequest(requestId, endpoint = PIT_DEFAULT_ENDPOINT) {
+  if (!requestId) {
+    return;
+  }
+  chrome.runtime.sendMessage({
+    type: "cancel-translation",
+    requestIds: [requestId],
+    endpoint
+  }).catch(() => {});
+}
+
+function cancelActiveTranslationRequests() {
+  const requestsByEndpoint = new Map();
+  PIT_STATE.translationRequestEndpoints.forEach((endpoint, requestId) => {
+    const normalizedEndpoint = endpoint || PIT_DEFAULT_ENDPOINT;
+    const requestIds = requestsByEndpoint.get(normalizedEndpoint) || [];
+    requestIds.push(requestId);
+    requestsByEndpoint.set(normalizedEndpoint, requestIds);
+  });
+  requestsByEndpoint.forEach((requestIds, endpoint) => {
+    chrome.runtime.sendMessage({
+      type: "cancel-translation",
+      requestIds,
+      endpoint
+    }).catch(() => {});
+  });
 }
 
 function pendingEntryDistance(entry) {

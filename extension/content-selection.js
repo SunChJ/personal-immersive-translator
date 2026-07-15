@@ -59,18 +59,33 @@ async function translateCurrentSelection() {
   renderSelectionTooltipPending(rect);
 
   const settings = await readTranslationSettings();
-  const response = await chrome.runtime.sendMessage({
-    type: "translate-batch",
-    items: [{
-      id: "selection",
-      index: 0,
-      text
-    }],
-    targetLanguage: settings.targetLanguage,
-    endpoint: settings.endpoint,
-    priority: "interactive",
-    sourceUrl: location.href
-  });
+  const bridgeRequestId = `${PIT_STATE.sessionId}-selection-${requestId}`;
+  if (PIT_STATE.activeSelectionBridgeRequestId) {
+    cancelTranslationRequest(PIT_STATE.activeSelectionBridgeRequestId, settings.endpoint);
+  }
+  PIT_STATE.activeSelectionBridgeRequestId = bridgeRequestId;
+  PIT_STATE.activeSelectionEndpoint = settings.endpoint;
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "translate-batch",
+      items: [{
+        id: "selection",
+        index: 0,
+        text
+      }],
+      targetLanguage: settings.targetLanguage,
+      endpoint: settings.endpoint,
+      priority: "interactive",
+      sourceUrl: location.href,
+      requestId: bridgeRequestId
+    });
+  } finally {
+    if (PIT_STATE.activeSelectionBridgeRequestId === bridgeRequestId) {
+      PIT_STATE.activeSelectionBridgeRequestId = "";
+      PIT_STATE.activeSelectionEndpoint = "";
+    }
+  }
 
   if (PIT_STATE.selectionRequestId !== requestId) {
     return;
@@ -258,6 +273,14 @@ function speechLanguageForTarget(targetLanguage) {
 
 function hideSelectionTooltip() {
   PIT_STATE.selectionRequestId += 1;
+  if (PIT_STATE.activeSelectionBridgeRequestId) {
+    cancelTranslationRequest(
+      PIT_STATE.activeSelectionBridgeRequestId,
+      PIT_STATE.activeSelectionEndpoint || PIT_DEFAULT_ENDPOINT
+    );
+    PIT_STATE.activeSelectionBridgeRequestId = "";
+    PIT_STATE.activeSelectionEndpoint = "";
+  }
   PIT_STATE.selectionTooltip?.remove();
   PIT_STATE.selectionTooltip = null;
 }
