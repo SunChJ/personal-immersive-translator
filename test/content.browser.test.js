@@ -30,6 +30,13 @@ test("long-page tail reserves one native turn for foreground work", async () => 
   assert.equal(result.maxActive, 2);
 });
 
+test("local provider keeps only one page batch in flight", async () => {
+  const result = await getBrowserSuiteResult("local-page-concurrency");
+  assert.equal(result.secondStartedBeforeFirstResolved, false);
+  assert.equal(result.maxActive, 1);
+  assert.equal(result.batchSizes.reduce((sum, size) => sum + size, 0), 45);
+});
+
 test("first visible batch pipelines the tail without waiting for completion", async () => {
   const result = await getBrowserSuiteResult("pipelined-tail");
   assert.equal(result.tailStartedBeforeFirstResolved, true);
@@ -472,14 +479,15 @@ function createHarnessHtml(routeSources, contentSources) {
       ok: true,
       translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
     });
-    window.__pitHealth = {
+    window.__pitDefaultHealth = {
       ok: true,
       name: "Gloss",
-      provider: "llama",
-      model: "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
+      provider: "codex",
+      model: "gpt-5.3-codex-spark",
       configRevision: "provider-a",
       warm: true
     };
+    window.__pitHealth = { ...window.__pitDefaultHealth };
     window.__pitStorage = {
       showFloatingButton: false,
       translateSelection: false,
@@ -565,6 +573,9 @@ function createHarnessHtml(routeSources, contentSources) {
       document.body.innerHTML = html;
       window.__pitCalls.length = 0;
       window.__pitRuntime.send = window.__pitDefaultSend;
+      window.__pitHealth = { ...window.__pitDefaultHealth };
+      PIT_STATE.provider = "";
+      PIT_STATE.providerConfigRevision = "";
     }
 
     async function runCase(name) {
@@ -749,6 +760,57 @@ function createHarnessHtml(routeSources, contentSources) {
         return {
           batchSizes: translationCalls().map((call) => call.items.length),
           maxActive
+        };
+      }
+
+      if (name === "local-page-concurrency") {
+        const paragraphs = Array.from({ length: 45 }, (_, index) =>
+          '<p>Local serialized paragraph number ' + index + ' is readable.</p>'
+        ).join("");
+        setBody("<main>" + paragraphs + "</main>");
+        window.__pitHealth = {
+          ...window.__pitDefaultHealth,
+          provider: "llama",
+          model: "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
+          configRevision: "local-provider"
+        };
+        let active = 0;
+        let maxActive = 0;
+        let releaseFirst;
+        let first = true;
+        window.__pitRuntime.send = (message) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          if (first) {
+            first = false;
+            return new Promise((resolve) => {
+              releaseFirst = () => {
+                active -= 1;
+                resolve({
+                  ok: true,
+                  translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+                });
+              };
+            });
+          }
+          return new Promise((resolve) => window.setTimeout(() => {
+            active -= 1;
+            resolve({
+              ok: true,
+              translations: message.items.map((item) => ({ id: item.id, text: "translated:" + item.text }))
+            });
+          }, 20));
+        };
+        const translating = translatePage(TEST_OPTIONS);
+        await waitFor(() => translationCalls().length === 1, 4000, "the first local page batch");
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        const secondStartedBeforeFirstResolved = translationCalls().length > 1;
+        releaseFirst();
+        await translating;
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          maxActive,
+          secondStartedBeforeFirstResolved
         };
       }
 
@@ -1227,6 +1289,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "floating-auto-translate",
         "auto-translate-late-content",
         "bounded-tail-concurrency",
+        "local-page-concurrency",
         "pipelined-tail",
         "duplicate-fanout",
         "hacker-news-titles",
