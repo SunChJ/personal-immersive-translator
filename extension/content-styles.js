@@ -899,6 +899,10 @@ function injectStyles() {
       color: #ff7a72;
     }
 
+    .html5-video-player[data-pit-subtitle-buffering="true"] .ytp-caption-window-container {
+      visibility: hidden !important;
+    }
+
     @keyframes pit-subtitle-pulse {
       to { opacity: 0.45; }
     }

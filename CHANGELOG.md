@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.4 - 2026-07-16
+
+- Added media-style subtitle pre-roll and rebuffer gates: playback briefly waits while the current cue and a six-second translated cushion are prepared, then reveals the native bilingual caption atomically. Seeking flushes stale work and repeats the same guarded refill instead of showing the original line first.
+- Reattached translations with a caption-scoped mutation observer before YouTube can paint a newly rebuilt original-only cue, replacing the previous 250 ms polling delay.
+- Expanded preheating from a fixed 45-second window to a 60-second base window that scales with playback speed, with a 25-second low-water refill threshold.
+- Kept subtitle translation alive across transient tail-batch failures with bounded exponential retries, and continuously rescheduled refill work while playback is waiting for its translated cushion.
+
 ## 0.5.3 - 2026-07-15
 
 - Restored YouTube subtitle translation with POT-aware timed-text discovery, same-page session fetching, and a credentialed background fallback.
