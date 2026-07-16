@@ -9,20 +9,31 @@ test("WXT emits distinct Chrome and Safari MV3 manifests", () => {
   const chrome = readTarget("chrome-mv3");
   const safari = readTarget("safari-mv3");
   const chromeMain = chrome.manifest.content_scripts.find((script) => script.world === "MAIN");
+  const safariMain = safari.manifest.content_scripts.find((script) => script.world === "MAIN");
 
   assert.equal(chrome.manifest.manifest_version, 3);
   assert.equal(safari.manifest.manifest_version, 3);
   assert.deepEqual(chromeMain?.js, ["route-patch.js"]);
-  assert.equal(safari.manifest.content_scripts.some((script) => "world" in script), false);
+  assert.deepEqual(safariMain?.js, ["route-patch.js"]);
+  assert.equal(safariMain?.run_at, "document_start");
   assert.equal(chrome.manifest.permissions.includes("nativeMessaging"), false);
   assert.equal(safari.manifest.permissions.includes("nativeMessaging"), true);
   assert.equal(chrome.manifest.host_permissions.includes("https://www.youtube.com/api/timedtext*"), true);
+  assert.equal(safari.manifest.host_permissions.includes("https://www.youtube.com/api/timedtext*"), true);
   assert.equal(
     chrome.manifest.content_scripts.some((script) => script.js.includes("content-subtitles.js")),
     true
   );
+  assert.equal(
+    safari.manifest.content_scripts.some((script) => script.js.includes("content-subtitles.js")),
+    true
+  );
   assert.match(chrome.configuration, /GLOSS_BROWSER_TARGET=`chrome`/);
   assert.match(safari.configuration, /GLOSS_BROWSER_TARGET=`safari`/);
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(ROOT, "extension", "popup.js"), "utf8"),
+    /PIT_BROWSER_TARGET === "safari"[\s\S]*translateSubtitles[\s\S]*hidden/
+  );
 
   const safariProject = fs.readFileSync(
     path.join(ROOT, "safari", "Gloss", "Gloss.xcodeproj", "project.pbxproj"),

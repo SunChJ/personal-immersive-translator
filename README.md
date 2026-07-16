@@ -18,7 +18,7 @@ The Gloss extension adds page, selection, bilingual, and replace-mode translatio
 - Match translations back to DOM blocks using stable `pitId` anchors.
 - Use a fast first batch and character-budgeted follow-up batches for responsive long-page translation.
 - Tune the request item and character budgets without bypassing the provider-aware concurrency guard.
-- Translate YouTube subtitles in Chrome with a separate playback-aware queue and bilingual overlay.
+- Translate YouTube subtitles in Chrome and Safari with a separate playback-aware queue and bilingual overlay.
 - Read selection translations aloud with local system voices, adjustable speed, and one active playback at a time.
 - Translate identical full text once and fan the result back out to every DOM position.
 - Keep replace mode reversible without destroying original links or inline nodes.
@@ -103,9 +103,9 @@ Open the popup's overflow menu to tune `Batch items`, `Batch characters`, and `S
 
 ## YouTube Subtitles
 
-Chrome exposes a `译` button in the YouTube player when the video has uploaded or automatic captions. Enable it there or turn on `YouTube subtitles` in the popup. Gloss translates an initial 50-second window, prefetches the next 60 seconds as playback approaches the boundary, and starts a new relevant window after seeking. Subtitle work uses its own queue and the subtitle translation profile.
+Chrome and Safari expose a `译` button in the YouTube player when the video has uploaded or automatic captions. Enable it there or turn on `YouTube subtitles` in the popup. Gloss translates an initial 50-second window, prefetches the next 60 seconds as playback approaches the boundary, and starts a new relevant window after seeking. Subtitle work uses its own queue and the subtitle translation profile.
 
-The first release supports Chrome YouTube pages. Safari does not expose the page-player caption metadata through the same main-world bridge yet, so its subtitle control stays unavailable rather than falling back to fragile DOM scraping.
+Safari and Chrome inject the same caption bridge directly into the page's main world. Grant Gloss access to YouTube when Safari asks so caption discovery and timed-text requests can run.
 
 ## Text-to-Speech
 
