@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 - 2026-07-15
+
+- Synchronized the Gloss app, Chrome extension, and Safari extension release version.
+- Added the product version beside Gloss in the macOS menu-bar panel header.
+
 ## 0.5.0 - 2026-07-15
 
 - Added Chrome YouTube subtitle translation with a separate time-window queue, playback-aware prefetching, streamed results, and a bilingual Shadow DOM overlay.

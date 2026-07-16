@@ -1,6 +1,6 @@
 {
   "name": "gloss-browser-extension",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "The Gloss browser extension for immersive page translation through the Gloss macOS app.",
   "scripts": {
