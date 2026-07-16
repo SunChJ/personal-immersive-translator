@@ -18,7 +18,7 @@ Gloss 扩展通过同一套 WXT 代码为 Chrome 和 Safari 提供整页、划�
 - 通过稳定的 `pitId` 将译文匹配回原 DOM 块，降低错位风险。
 - 首批优先返回、后续按字符预算批处理，兼顾首屏速度和长页面吞吐。
 - 可以调整每批 item 数和字符预算，同时保留按 provider 限流的并发保护。
-- Chrome 支持 YouTube 字幕翻译，使用独立的播放时间窗队列和双语覆盖层。
+- Chrome 与 Safari 均支持 YouTube 字幕翻译，使用独立的播放时间窗队列和双语覆盖层。
 - 划词译文可通过系统声音朗读，支持语速、长文本分句和单实例停止控制。
 - 相同全文只请求一次，并把译文准确回填到每个 DOM 位置。
 - 替换模式不会销毁原始链接和行内节点，清除后可完整恢复。
@@ -103,9 +103,9 @@ npm run verify
 
 ## YouTube 字幕
 
-当视频带有人工或自动字幕时，Chrome 的 YouTube 播放器会出现 `译` 按钮；也可以在 popup 中开启 `YouTube subtitles`。Gloss 先翻译当前起 50 秒的字幕，播放接近边界时预取后续 60 秒，拖动进度后则直接建立对应时间窗。字幕任务使用独立队列和字幕专用翻译 profile。
+当视频带有人工或自动字幕时，Chrome 与 Safari 的 YouTube 播放器都会出现 `译` 按钮；也可以在 popup 中开启 `YouTube subtitles`。Gloss 先翻译当前起 50 秒的字幕，播放接近边界时预取后续 60 秒，拖动进度后则直接建立对应时间窗。字幕任务使用独立队列和字幕专用翻译 profile。
 
-首版仅支持 Chrome 的 YouTube 页面。Safari 暂时无法通过同一条 main-world 桥接读取播放器字幕轨元数据，因此不会使用脆弱的 DOM 抓取作为降级方案。
+Safari 与 Chrome 都会把同一份字幕桥接直接注入网页的 Main World。Safari 请求 YouTube 网站访问权限时需要允许，字幕轨发现与 timed-text 请求才能运行。
 
 ## 文本朗读
 

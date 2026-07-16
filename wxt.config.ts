@@ -1,5 +1,11 @@
 import { defineConfig } from "wxt";
 
+const youtubeTimedTextPermissions = [
+  "https://www.youtube.com/api/timedtext*",
+  "https://youtube.com/api/timedtext*",
+  "https://www.youtube-nocookie.com/api/timedtext*"
+];
+
 const isolatedContentScripts = [
   "gloss-config.js",
   "shared.js",
@@ -31,14 +37,12 @@ export default defineConfig({
         service_worker: "background.js"
       },
       content_scripts: [
-        ...(!isSafari
-          ? [{
-              matches: ["<all_urls>"],
-              js: ["route-patch.js"],
-              run_at: "document_start" as const,
-              world: "MAIN" as const
-            }]
-          : []),
+        {
+          matches: ["<all_urls>"],
+          js: ["route-patch.js"],
+          run_at: "document_start" as const,
+          world: "MAIN" as const
+        },
         {
           matches: ["<all_urls>"],
           js: isolatedContentScripts,
@@ -48,11 +52,7 @@ export default defineConfig({
       host_permissions: [
         "http://127.0.0.1/*",
         "http://localhost/*",
-        ...(!isSafari ? [
-          "https://www.youtube.com/api/timedtext*",
-          "https://youtube.com/api/timedtext*",
-          "https://www.youtube-nocookie.com/api/timedtext*"
-        ] : [])
+        ...youtubeTimedTextPermissions
       ],
       permissions: [
         "activeTab",

@@ -86,9 +86,6 @@ async function init() {
   fields.showFloatingButton.checked = saved.showFloatingButton;
   fields.translateSelection.checked = saved.translateSelection;
   fields.translateSubtitles.checked = saved.translateSubtitles === true;
-  if (PIT_BROWSER_TARGET === "safari") {
-    fields.translateSubtitles.closest(".switch-row").hidden = true;
-  }
   fields.batchSize.value = normalizeBatchItems(saved.batchSize);
   fields.batchCharLimit.value = normalizeBatchCharLimit(saved.batchCharLimit);
   fields.ttsRate.value = String(normalizeTtsRate(saved.ttsRate));
@@ -399,11 +396,15 @@ async function sendToPage(tabId, message) {
 
     const contentScripts = chrome.runtime.getManifest().content_scripts || [];
     const mainFiles = contentScripts.find((entry) => entry.world === "MAIN")?.js || [];
-    const isolatedFiles = contentScripts.find((entry) => entry.world !== "MAIN")?.js || [];
+    const isolatedFiles = contentScripts
+      .filter((entry) => entry.world !== "MAIN")
+      .flatMap((entry) => entry.js || []);
     if (mainFiles.length > 0) {
       await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: mainFiles });
     }
-    await chrome.scripting.executeScript({ target: { tabId }, files: isolatedFiles });
+    if (isolatedFiles.length > 0) {
+      await chrome.scripting.executeScript({ target: { tabId }, files: isolatedFiles });
+    }
     return await chrome.tabs.sendMessage(tabId, message);
   }
 }

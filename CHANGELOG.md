@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added Safari YouTube subtitle parity through Safari's native Main World content-script support, including caption-track discovery, POT-aware timed-text fetching, the player control, and the popup setting.
+- Added YouTube timed-text permissions to Safari and kept the shared Chrome/Safari subtitle runtime as the single implementation.
+
 ## 0.5.4 - 2026-07-16
 
 - Added media-style subtitle pre-roll and rebuffer gates: playback briefly waits while the current cue and a six-second translated cushion are prepared, then reveals the native bilingual caption atomically. Seeking flushes stale work and repeats the same guarded refill instead of showing the original line first.
