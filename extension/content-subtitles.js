@@ -36,6 +36,8 @@ function initSubtitleTranslation() {
   chrome.storage.local.get({ translateSubtitles: false }).then((settings) => {
     setSubtitlePreference(settings.translateSubtitles === true);
     requestYouTubeCaptionTracks();
+  }).catch((error) => {
+    disableStaleGlossContext(error);
   });
 }
 
@@ -151,8 +153,13 @@ function ensureSubtitleButton() {
   button.textContent = "译";
   button.setAttribute("aria-label", "Translate subtitles with Gloss");
   button.title = "Translate subtitles with Gloss";
-  button.addEventListener("click", async () => {
-    await chrome.storage.local.set({ translateSubtitles: !state.wantsEnabled });
+  button.addEventListener("click", () => {
+    if (disableStaleGlossContext()) return;
+    chrome.storage.local.set({ translateSubtitles: !state.wantsEnabled }).catch((error) => {
+      if (!disableStaleGlossContext(error)) {
+        showSubtitleError(error);
+      }
+    });
   });
   controls.prepend(button);
   state.button = button;
@@ -255,7 +262,8 @@ async function requestYouTubeSubtitles(url) {
       url
     });
     return backgroundResponse?.ok ? backgroundResponse : (pageResponse || backgroundResponse);
-  } catch {
+  } catch (error) {
+    disableStaleGlossContext(error);
     return pageResponse;
   }
 }
@@ -551,7 +559,7 @@ async function drainSubtitleJobs(priority) {
         });
       }
     } catch (error) {
-      if (disableStaleGlossContext()) return;
+      if (disableStaleGlossContext(error)) return;
       if (state.enabled && job.epoch === state.queueEpoch) {
         deferSubtitleJobRetry(state, job, error);
       }
@@ -661,6 +669,7 @@ async function translateSubtitleBatch(job, generation) {
       requestId
     });
   } catch (error) {
+    if (disableStaleGlossContext(error)) return;
     if (!state.enabled || generation !== state.generation || job.epoch !== state.queueEpoch) return;
     throw error;
   } finally {
@@ -976,19 +985,22 @@ function updateSubtitleButton(mode = "") {
       : "Translate subtitles with Gloss";
 }
 
-function showSubtitleError(error) {
+async function showSubtitleError(error) {
   const state = PIT_STATE.subtitle;
   if (!state) return;
-  if (disableStaleGlossContext()) return;
+  if (disableStaleGlossContext(error)) return;
   stopSubtitleTranslation({ preservePreference: false });
-  chrome.storage.local.set({ translateSubtitles: false }).finally(() => {
-    if (!state.button) return;
-    state.button.dataset.error = "true";
-    state.button.title = error instanceof Error ? error.message : String(error);
-    window.setTimeout(() => {
-      if (state.button?.isConnected) state.button.dataset.error = "false";
-    }, 4000);
-  });
+  try {
+    await chrome.storage.local.set({ translateSubtitles: false });
+  } catch (storageError) {
+    if (disableStaleGlossContext(storageError)) return;
+  }
+  if (!state.button) return;
+  state.button.dataset.error = "true";
+  state.button.title = error instanceof Error ? error.message : String(error);
+  window.setTimeout(() => {
+    if (state.button?.isConnected) state.button.dataset.error = "false";
+  }, 4000);
 }
 
 function handleSubtitleRouteChange() {

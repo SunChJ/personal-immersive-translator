@@ -89,6 +89,8 @@ test("an invalidated extension context shuts down stale page controls", async ()
   assert.equal(result.floatingRemoved, true);
   assert.equal(result.subtitleEnabled, false);
   assert.equal(result.subtitleGeneration, 1);
+  assert.equal(result.storageSetCalls, 1);
+  assert.deepEqual(result.unhandledErrors, []);
   assert.equal(
     result.settingsError,
     "Gloss was updated. Refresh this page to reconnect the extension."
@@ -594,6 +596,7 @@ function createHarnessHtml(routeSources, contentSources) {
     };
     window.chrome = {
       runtime: {
+        id: "pit-test-extension",
         onMessage: {
           addListener(listener) { window.__pitRuntime.listener = listener; }
         },
@@ -951,22 +954,37 @@ function createHarnessHtml(routeSources, contentSources) {
       }
 
       if (name === "invalidated-extension-context") {
-        setBody('<div id="pit-floating"></div>');
+        setBody(
+          '<div id="pit-floating"></div>' +
+          '<div class="html5-video-player"><div class="ytp-right-controls"></div></div>'
+        );
         PIT_STATE.floating = document.getElementById("pit-floating");
         PIT_STATE.subtitle = createSubtitleState();
         PIT_STATE.subtitle.enabled = true;
         PIT_STATE.subtitle.scheduler = window.setInterval(() => {}, 1000);
-        const originalStorage = chrome.storage;
+        PIT_STATE.subtitle.tracks = [{
+          baseUrl: "https://www.youtube.com/api/timedtext?v=test&lang=en",
+          languageCode: "en"
+        }];
+        ensureSubtitleButton();
+        const originalStorageSet = chrome.storage.local.set;
+        const errorsBefore = window.__pitErrors.length;
+        let storageSetCalls = 0;
         let settingsError = "";
         let disabled = false;
         try {
-          chrome.storage = undefined;
-          disabled = disableStaleGlossContext();
+          chrome.storage.local.set = () => {
+            storageSetCalls += 1;
+            return Promise.reject(new Error("Extension context invalidated."));
+          };
+          PIT_STATE.subtitle.button.click();
+          await new Promise((resolve) => window.setTimeout(resolve, 50));
+          disabled = PIT_STATE.extensionContextInvalidated;
           await readTranslationSettings();
         } catch (error) {
           settingsError = error instanceof Error ? error.message : String(error);
         } finally {
-          chrome.storage = originalStorage;
+          chrome.storage.local.set = originalStorageSet;
         }
         const result = {
           disabled,
@@ -974,7 +992,9 @@ function createHarnessHtml(routeSources, contentSources) {
           floatingRemoved: !document.getElementById("pit-floating"),
           subtitleEnabled: PIT_STATE.subtitle.enabled,
           subtitleGeneration: PIT_STATE.subtitle.generation,
-          settingsError
+          settingsError,
+          storageSetCalls,
+          unhandledErrors: window.__pitErrors.slice(errorsBefore)
         };
         PIT_STATE.extensionContextInvalidated = false;
         PIT_STATE.subtitle = null;
