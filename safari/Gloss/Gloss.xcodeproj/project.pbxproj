@@ -42,6 +42,7 @@
 		1966F87030062FAA00BBE897 /* icon-32.png in Resources */ = {isa = PBXBuildFile; fileRef = 1966F85630062FAA00BBE897 /* icon-32.png */; };
 		1966F87130062FAA00BBE897 /* content-translate.js in Resources */ = {isa = PBXBuildFile; fileRef = 1966F85730062FAA00BBE897 /* content-translate.js */; };
 		1966F87230062FAA00BBE897 /* icon-512.png in Resources */ = {isa = PBXBuildFile; fileRef = 1966F85830062FAA00BBE897 /* icon-512.png */; };
+		1966F87330062FAA00BBE897 /* content-subtitles.js in Resources */ = {isa = PBXBuildFile; fileRef = 1966F85530062FAA00BBE897 /* content-subtitles.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -104,6 +105,7 @@
 		1966F85230062FAA00BBE897 /* content-styles.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = "content-styles.js"; path = "../../../.output/safari-mv3/content-styles.js"; sourceTree = "<group>"; };
 		1966F85330062FAA00BBE897 /* shared.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = shared.js; path = "../../../.output/safari-mv3/shared.js"; sourceTree = "<group>"; };
 		1966F85430062FAA00BBE897 /* icon-128.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = "icon-128.png"; path = "../../../.output/safari-mv3/icon-128.png"; sourceTree = "<group>"; };
+		1966F85530062FAA00BBE897 /* content-subtitles.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = "content-subtitles.js"; path = "../../../.output/safari-mv3/content-subtitles.js"; sourceTree = "<group>"; };
 		1966F85630062FAA00BBE897 /* icon-32.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = "icon-32.png"; path = "../../../.output/safari-mv3/icon-32.png"; sourceTree = "<group>"; };
 		1966F85730062FAA00BBE897 /* content-translate.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = "content-translate.js"; path = "../../../.output/safari-mv3/content-translate.js"; sourceTree = "<group>"; };
 		1966F85830062FAA00BBE897 /* icon-512.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = "icon-512.png"; path = "../../../.output/safari-mv3/icon-512.png"; sourceTree = "<group>"; };
@@ -204,6 +206,7 @@
 				1966F85230062FAA00BBE897 /* content-styles.js */,
 				1966F85330062FAA00BBE897 /* shared.js */,
 				1966F85430062FAA00BBE897 /* icon-128.png */,
+				1966F85530062FAA00BBE897 /* content-subtitles.js */,
 				1966F85630062FAA00BBE897 /* icon-32.png */,
 				1966F85730062FAA00BBE897 /* content-translate.js */,
 				1966F85830062FAA00BBE897 /* icon-512.png */,
@@ -329,6 +332,7 @@
 				1966F85E30062FAA00BBE897 /* content-state.js in Resources */,
 				1966F86930062FAA00BBE897 /* manifest.json in Resources */,
 				1966F87130062FAA00BBE897 /* content-translate.js in Resources */,
+				1966F87330062FAA00BBE897 /* content-subtitles.js in Resources */,
 				1966F87030062FAA00BBE897 /* icon-32.png in Resources */,
 				1966F86D30062FAA00BBE897 /* shared.js in Resources */,
 				1966F86A30062FAA00BBE897 /* popup.css in Resources */,

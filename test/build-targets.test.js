@@ -24,6 +24,19 @@ test("WXT emits distinct Chrome and Safari MV3 manifests", () => {
   assert.match(chrome.configuration, /GLOSS_BROWSER_TARGET=`chrome`/);
   assert.match(safari.configuration, /GLOSS_BROWSER_TARGET=`safari`/);
 
+  const safariProject = fs.readFileSync(
+    path.join(ROOT, "safari", "Gloss", "Gloss.xcodeproj", "project.pbxproj"),
+    "utf8"
+  );
+  const safariContentScripts = safari.manifest.content_scripts.flatMap((script) => script.js);
+  safariContentScripts.forEach((file) => {
+    assert.equal(
+      safariProject.includes(`${file} in Resources`),
+      true,
+      `${file} must be copied into the Safari extension bundle`
+    );
+  });
+
   for (const size of [16, 32, 48, 96, 128, 256, 512]) {
     assert.equal(fs.existsSync(path.join(safari.directory, `icon-${size}.png`)), true);
   }

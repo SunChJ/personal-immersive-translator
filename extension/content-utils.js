@@ -86,15 +86,25 @@ function nextAnimationFrame() {
 
 function hasGlossExtensionContext() {
   try {
-    return Boolean(globalThis.chrome?.runtime?.sendMessage && globalThis.chrome?.storage?.local);
+    return Boolean(
+      globalThis.chrome?.runtime?.id
+      && globalThis.chrome.runtime.sendMessage
+      && globalThis.chrome?.storage?.local
+    );
   } catch {
     return false;
   }
 }
 
-function disableStaleGlossContext() {
-  if (hasGlossExtensionContext()) return false;
-  if (typeof PIT_STATE === "undefined" || PIT_STATE.extensionContextInvalidated) return true;
+function isGlossExtensionContextInvalidatedError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /extension context invalidated/i.test(message);
+}
+
+function disableStaleGlossContext(error) {
+  if (typeof PIT_STATE !== "undefined" && PIT_STATE.extensionContextInvalidated) return true;
+  if (!isGlossExtensionContextInvalidatedError(error) && hasGlossExtensionContext()) return false;
+  if (typeof PIT_STATE === "undefined") return true;
 
   PIT_STATE.extensionContextInvalidated = true;
   PIT_STATE.translationEpoch += 1;

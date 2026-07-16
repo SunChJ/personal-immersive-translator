@@ -6,6 +6,8 @@
 - Reattached translations with a caption-scoped mutation observer before YouTube can paint a newly rebuilt original-only cue, replacing the previous 250 ms polling delay.
 - Expanded preheating from a fixed 45-second window to a 60-second base window that scales with playback speed, with a 25-second low-water refill threshold.
 - Kept subtitle translation alive across transient tail-batch failures with bounded exponential retries, and continuously rescheduled refill work while playback is waiting for its translated cushion.
+- Silenced stale subtitle controls after an extension reload by detecting the missing runtime ID and absorbing context-invalidated storage and messaging rejections.
+- Included the subtitle content script in the packaged Safari extension and now verify every manifest content script is present in the Xcode resource phase.
 
 ## 0.5.3 - 2026-07-15
 

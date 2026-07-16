@@ -517,7 +517,12 @@ function readTranslationSettings() {
     batchCharLimit: normalizeBatchCharLimit(settings.batchCharLimit),
     ttsRate: normalizeTtsRate(settings.ttsRate),
     minChars: 4
-  }));
+  })).catch((error) => {
+    if (disableStaleGlossContext(error)) {
+      throw glossContextInvalidatedError();
+    }
+    throw error;
+  });
 }
 
 function hasPageTranslations() {
