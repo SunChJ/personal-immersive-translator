@@ -47,6 +47,7 @@ const PIT_STATE = {
   providerConfigRevision: "",
   providerReasoning: "",
   lastModel: "",
+  extensionContextInvalidated: false,
   sessionId: createShortId()
 };
 

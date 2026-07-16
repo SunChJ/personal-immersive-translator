@@ -1,11 +1,16 @@
-// YouTube subtitle translation: caption discovery, timed-text parsing, independent
-// translation queue, progress-aware prefetching, and an isolated bilingual overlay.
-const PIT_SUBTITLE_INITIAL_WINDOW_MS = 50_000;
-const PIT_SUBTITLE_NEXT_WINDOW_MS = 60_000;
-const PIT_SUBTITLE_PREFETCH_LEAD_MS = 40_000;
+// YouTube subtitle translation: caption discovery, timed-text parsing, a
+// progress-aware hot/warm buffer, and native bilingual caption rendering.
+const PIT_SUBTITLE_HOT_LOOK_BEHIND_MS = 5_000;
+const PIT_SUBTITLE_HOT_LOOK_AHEAD_MS = 15_000;
+const PIT_SUBTITLE_READY_LOW_WATER_MS = 15_000;
+const PIT_SUBTITLE_READY_TARGET_MS = 45_000;
+const PIT_SUBTITLE_MAX_BATCH_ITEMS = 5;
+const PIT_SUBTITLE_TIMED_TEXT_WAIT_MS = 3_000;
+const PIT_SUBTITLE_FETCH_TIMEOUT_MS = 8_000;
+let PIT_SUBTITLE_FETCH_SEQUENCE = 0;
 
 function initSubtitleTranslation() {
-  if (!isYouTubeLocation()) {
+  if (disableStaleGlossContext() || !isYouTubeLocation()) {
     return;
   }
   PIT_STATE.subtitle = createSubtitleState();
@@ -30,25 +35,29 @@ function initSubtitleTranslation() {
 function createSubtitleState() {
   return {
     activeRequestIds: new Set(),
+    backgroundDrain: null,
     button: null,
     buttonAttempts: 0,
-    coveredEndMs: 0,
-    coveredStartMs: 0,
     cues: [],
     enabled: false,
     generation: 0,
     inFlightCueIds: new Set(),
     lastCueId: "",
-    overlay: null,
-    pendingWindowKeys: new Set(),
-    pendingWindows: [],
+    nativeLine: null,
+    nextJobSequence: 0,
+    pendingJobs: [],
+    queueEpoch: 0,
+    queuedCueIds: new Set(),
     scheduler: null,
+    settings: null,
     sourceTrack: null,
     tracks: [],
     translations: new Map(),
+    timedTextUrl: "",
+    video: null,
     videoId: "",
+    visibleDrain: null,
     wantsEnabled: false,
-    windowDrain: null
   };
 }
 
@@ -80,6 +89,10 @@ function handleYouTubeCaptionTracks(event) {
   }
   state.videoId = videoId;
   state.tracks = tracks;
+  const timedTextUrl = usableTimedTextUrl(payload?.timedTextUrl, videoId);
+  if (timedTextUrl || videoChanged) {
+    state.timedTextUrl = timedTextUrl;
+  }
   ensureSubtitleButton();
   if (tracks.length === 0) {
     if (state.button) {
@@ -166,10 +179,15 @@ async function startSubtitleTranslation() {
   state.generation += 1;
   const generation = state.generation;
   updateSubtitleButton("loading");
-  const response = await chrome.runtime.sendMessage({
-    type: "fetch-youtube-subtitles",
-    url: track.baseUrl
-  });
+  window.dispatchEvent(new Event("pit:ensure-youtube-subtitles"));
+  let subtitleUrl = state.timedTextUrl || track.baseUrl;
+  let response = await requestYouTubeSubtitles(subtitleUrl);
+  if (!response?.ok) {
+    window.dispatchEvent(new Event("pit:ensure-youtube-subtitles"));
+    const refreshedUrl = await waitForTimedTextUrl(state, generation, subtitleUrl);
+    subtitleUrl = refreshedUrl || state.timedTextUrl || subtitleUrl;
+    response = await requestYouTubeSubtitles(subtitleUrl);
+  }
   if (!state.enabled || generation !== state.generation) return;
   if (!response?.ok) {
     throw new Error(response?.error || "Subtitle download failed.");
@@ -178,19 +196,98 @@ async function startSubtitleTranslation() {
   if (state.cues.length === 0) {
     throw new Error("This video has no readable subtitle cues.");
   }
-  ensureSubtitleOverlay();
+  ensureSubtitleTranslationLine();
   const video = document.querySelector("video.html5-main-video") || document.querySelector("video");
   if (!video) {
     throw new Error("YouTube video player is not ready.");
   }
+  state.settings = await readTranslationSettings();
+  if (!state.enabled || generation !== state.generation) return;
+  state.queueEpoch += 1;
+  state.video?.removeEventListener("seeked", handleSubtitleSeek);
+  state.video = video;
+  video.addEventListener("seeked", handleSubtitleSeek);
   const currentMs = Math.max(0, video.currentTime * 1000);
-  state.coveredStartMs = Math.max(0, currentMs - 5000);
-  state.coveredEndMs = currentMs + PIT_SUBTITLE_INITIAL_WINDOW_MS;
-  queueSubtitleWindow(state.coveredStartMs, state.coveredEndMs);
+  scheduleSubtitleBuffer(currentMs, { forceWarm: true });
   window.clearInterval(state.scheduler);
   state.scheduler = window.setInterval(updateSubtitlePlayback, 250);
   updateSubtitleButton("active");
   updateSubtitlePlayback();
+}
+
+async function requestYouTubeSubtitles(url) {
+  const pageResponse = await requestYouTubeSubtitlesFromPage(url);
+  if (pageResponse?.ok) {
+    return pageResponse;
+  }
+  try {
+    const backgroundResponse = await chrome.runtime.sendMessage({
+      type: "fetch-youtube-subtitles",
+      url
+    });
+    return backgroundResponse?.ok ? backgroundResponse : (pageResponse || backgroundResponse);
+  } catch {
+    return pageResponse;
+  }
+}
+
+function requestYouTubeSubtitlesFromPage(url) {
+  const requestId = `pit-subtitle-${Date.now()}-${PIT_SUBTITLE_FETCH_SEQUENCE += 1}`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (response) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      window.removeEventListener("pit:youtube-subtitles-response", handleResponse);
+      resolve(response);
+    };
+    const handleResponse = (event) => {
+      let response;
+      try {
+        response = JSON.parse(String(event.detail || ""));
+      } catch {
+        return;
+      }
+      if (response?.requestId === requestId) {
+        finish(response);
+      }
+    };
+    const timeout = window.setTimeout(() => finish(null), PIT_SUBTITLE_FETCH_TIMEOUT_MS);
+    window.addEventListener("pit:youtube-subtitles-response", handleResponse);
+    window.dispatchEvent(new CustomEvent("pit:fetch-youtube-subtitles", {
+      detail: JSON.stringify({ requestId, url })
+    }));
+  });
+}
+
+async function waitForTimedTextUrl(state, generation, previousUrl = "") {
+  requestYouTubeCaptionTracks();
+  const deadline = Date.now() + PIT_SUBTITLE_TIMED_TEXT_WAIT_MS;
+  while (state.enabled && generation === state.generation && Date.now() < deadline) {
+    if (state.timedTextUrl && state.timedTextUrl !== previousUrl) {
+      return state.timedTextUrl;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+  }
+  return state.timedTextUrl !== previousUrl ? state.timedTextUrl : "";
+}
+
+function usableTimedTextUrl(value, videoId) {
+  try {
+    const url = new URL(String(value || ""));
+    if (
+      url.protocol !== "https:"
+      || !["www.youtube.com", "youtube.com", "www.youtube-nocookie.com"].includes(url.hostname.toLowerCase())
+      || url.pathname !== "/api/timedtext"
+      || (url.searchParams.get("v") && url.searchParams.get("v") !== videoId)
+    ) {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
 }
 
 function parseYouTubeSubtitleEvents(payload) {
@@ -215,91 +312,175 @@ function normalizeSubtitleText(value) {
   return String(value || "").replace(/[\n\r]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function queueSubtitleWindow(startMs, endMs) {
+function scheduleSubtitleBuffer(currentMs, { forceWarm = false } = {}) {
   const state = PIT_STATE.subtitle;
   if (!state?.enabled) return;
-  const key = `${Math.floor(startMs / 1000)}:${Math.floor(endMs / 1000)}`;
-  if (state.pendingWindowKeys.has(key)) return;
-  state.pendingWindowKeys.add(key);
-  state.pendingWindows.push({ startMs, endMs, key });
-  if (!state.windowDrain) {
-    const drain = drainSubtitleWindows().catch(showSubtitleError);
-    state.windowDrain = drain;
-    drain.finally(() => {
-      if (PIT_STATE.subtitle?.windowDrain === drain) PIT_STATE.subtitle.windowDrain = null;
+  const hotStartMs = Math.max(0, currentMs - PIT_SUBTITLE_HOT_LOOK_BEHIND_MS);
+  const hotEndMs = currentMs + PIT_SUBTITLE_HOT_LOOK_AHEAD_MS;
+  queueSubtitleRange(hotStartMs, hotEndMs, "visible");
+
+  const targetEndMs = currentMs + PIT_SUBTITLE_READY_TARGET_MS;
+  const readyEndMs = subtitleReadyEndMs(state, currentMs, targetEndMs);
+  if (forceWarm || readyEndMs - currentMs < PIT_SUBTITLE_READY_LOW_WATER_MS) {
+    queueSubtitleRange(hotEndMs, targetEndMs, "background");
+  }
+}
+
+function subtitleReadyEndMs(state, currentMs, targetEndMs) {
+  for (const cue of state.cues) {
+    if (cue.endMs < currentMs - 250) continue;
+    if (cue.startMs > targetEndMs) break;
+    if (!state.translations.has(cue.id)) {
+      return Math.max(currentMs, cue.startMs);
+    }
+  }
+  return targetEndMs;
+}
+
+function queueSubtitleRange(startMs, endMs, priority) {
+  const state = PIT_STATE.subtitle;
+  if (!state?.enabled || !state.settings) return;
+
+  if (priority === "visible") {
+    state.pendingJobs.forEach((job) => {
+      if (
+        job.priority === "background"
+        && job.cues.some((cue) => cue.endMs >= startMs && cue.startMs <= endMs)
+      ) {
+        job.priority = "visible";
+      }
     });
   }
-}
 
-async function drainSubtitleWindows() {
-  const state = PIT_STATE.subtitle;
-  while (state?.enabled && state.pendingWindows.length > 0) {
-    const windowRange = state.pendingWindows.shift();
-    state.pendingWindowKeys.delete(windowRange.key);
-    await translateSubtitleWindow(windowRange.startMs, windowRange.endMs, state.generation);
-  }
-}
-
-async function translateSubtitleWindow(startMs, endMs, generation) {
-  const state = PIT_STATE.subtitle;
-  if (!state?.enabled || generation !== state.generation) return;
-  const settings = await readTranslationSettings();
   const cues = state.cues.filter((cue) => (
     cue.endMs >= startMs
     && cue.startMs <= endMs
     && !state.translations.has(cue.id)
     && !state.inFlightCueIds.has(cue.id)
+    && !state.queuedCueIds.has(cue.id)
   ));
-  cues.forEach((cue) => state.inFlightCueIds.add(cue.id));
   const batches = buildTranslationBatches(
     cues,
-    normalizeBatchItems(settings.batchSize),
-    normalizeBatchCharLimit(settings.batchCharLimit)
+    Math.min(PIT_SUBTITLE_MAX_BATCH_ITEMS, normalizeBatchItems(state.settings.batchSize)),
+    normalizeBatchCharLimit(state.settings.batchCharLimit)
   );
-  try {
-    for (const batch of batches) {
-      if (!state.enabled || generation !== state.generation) return;
-      const requestId = `${PIT_STATE.sessionId}-subtitle-${state.videoId}-${PIT_STATE.nextStreamRequestId++}`;
-      state.activeRequestIds.add(requestId);
-      PIT_STATE.translationRequestEndpoints.set(requestId, settings.endpoint || PIT_DEFAULT_ENDPOINT);
-      PIT_STATE.translationStreams.set(requestId, (translation) => {
-        if (!state.enabled || generation !== state.generation || !translation?.id) return false;
-        state.translations.set(translation.id, String(translation.text || ""));
-        updateSubtitlePlayback();
-        return true;
-      });
-      let response;
-      try {
-        response = await chrome.runtime.sendMessage({
-          type: "translate-batch",
-          items: batch.map((cue, index) => ({ id: cue.id, index, text: cue.text })),
-          targetLanguage: settings.targetLanguage,
-          endpoint: settings.endpoint,
-          priority: "background",
-          profile: "subtitle",
-          contentKind: "subtitle",
-          sourceUrl: location.href,
-          requestId
-        });
-      } finally {
-        state.activeRequestIds.delete(requestId);
-        PIT_STATE.translationStreams.delete(requestId);
-        PIT_STATE.translationRequestEndpoints.delete(requestId);
-      }
-      if (!state.enabled || generation !== state.generation) return;
-      if (!response?.ok) {
-        throw new Error(response?.error || "Subtitle translation failed.");
-      }
-      (response.translations || []).forEach((translation) => {
-        if (translation?.id && typeof translation.text === "string") {
-          state.translations.set(translation.id, translation.text);
-        }
-      });
-      updateSubtitlePlayback();
-    }
-  } finally {
-    cues.forEach((cue) => state.inFlightCueIds.delete(cue.id));
+  batches.forEach((batch) => {
+    batch.forEach((cue) => state.queuedCueIds.add(cue.id));
+    state.pendingJobs.push({
+      cues: batch,
+      epoch: state.queueEpoch,
+      priority,
+      sequence: state.nextJobSequence += 1
+    });
+  });
+  state.pendingJobs.sort((left, right) => {
+    const priorityDifference = subtitlePriorityRank(left.priority) - subtitlePriorityRank(right.priority);
+    if (priorityDifference !== 0) return priorityDifference;
+    return left.cues[0].startMs - right.cues[0].startMs || left.sequence - right.sequence;
+  });
+  startSubtitleDrains();
+}
+
+function subtitlePriorityRank(priority) {
+  return priority === "visible" ? 0 : 1;
+}
+
+function startSubtitleDrains() {
+  const state = PIT_STATE.subtitle;
+  if (!state?.enabled) return;
+  startSubtitleDrain("visible", "visibleDrain");
+  startSubtitleDrain("background", "backgroundDrain");
+}
+
+function startSubtitleDrain(priority, drainKey) {
+  const state = PIT_STATE.subtitle;
+  if (
+    !state?.enabled
+    || state[drainKey]
+    || !state.pendingJobs.some((job) => job.priority === priority)
+  ) {
+    return;
   }
+  const drain = drainSubtitleJobs(priority).catch((error) => {
+    if (state.enabled) showSubtitleError(error);
+  });
+  state[drainKey] = drain;
+  drain.finally(() => {
+    if (PIT_STATE.subtitle?.[drainKey] !== drain) return;
+    PIT_STATE.subtitle[drainKey] = null;
+    startSubtitleDrains();
+  });
+}
+
+async function drainSubtitleJobs(priority) {
+  const state = PIT_STATE.subtitle;
+  while (state?.enabled) {
+    const jobIndex = state.pendingJobs.findIndex((job) => job.priority === priority);
+    if (jobIndex < 0) return;
+    const [job] = state.pendingJobs.splice(jobIndex, 1);
+    job.cues.forEach((cue) => {
+      state.queuedCueIds.delete(cue.id);
+      state.inFlightCueIds.add(cue.id);
+    });
+    try {
+      await translateSubtitleBatch(job, state.generation);
+    } finally {
+      job.cues.forEach((cue) => state.inFlightCueIds.delete(cue.id));
+    }
+  }
+}
+
+async function translateSubtitleBatch(job, generation) {
+  const state = PIT_STATE.subtitle;
+  if (!state?.enabled || generation !== state.generation || job.epoch !== state.queueEpoch) return;
+  const settings = state.settings;
+  const requestId = `${PIT_STATE.sessionId}-subtitle-${state.videoId}-${PIT_STATE.nextStreamRequestId++}`;
+  state.activeRequestIds.add(requestId);
+  PIT_STATE.translationRequestEndpoints.set(requestId, settings.endpoint || PIT_DEFAULT_ENDPOINT);
+  PIT_STATE.translationStreams.set(requestId, (translation) => {
+    if (
+      !state.enabled
+      || generation !== state.generation
+      || job.epoch !== state.queueEpoch
+      || !translation?.id
+    ) {
+      return false;
+    }
+    state.translations.set(translation.id, String(translation.text || ""));
+    updateSubtitlePlayback();
+    return true;
+  });
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "translate-batch",
+      items: job.cues.map((cue, index) => ({ id: cue.id, index, text: cue.text })),
+      targetLanguage: settings.targetLanguage,
+      endpoint: settings.endpoint,
+      priority: job.priority,
+      profile: "subtitle",
+      contentKind: "subtitle",
+      sourceUrl: location.href,
+      requestId
+    });
+  } catch (error) {
+    if (!state.enabled || generation !== state.generation || job.epoch !== state.queueEpoch) return;
+    throw error;
+  } finally {
+    state.activeRequestIds.delete(requestId);
+    PIT_STATE.translationStreams.delete(requestId);
+    PIT_STATE.translationRequestEndpoints.delete(requestId);
+  }
+  if (!state.enabled || generation !== state.generation || job.epoch !== state.queueEpoch) return;
+  if (!response?.ok) {
+    throw new Error(response?.error || "Subtitle translation failed.");
+  }
+  (response.translations || []).forEach((translation) => {
+    if (translation?.id && typeof translation.text === "string") {
+      state.translations.set(translation.id, translation.text);
+    }
+  });
+  updateSubtitlePlayback();
 }
 
 function updateSubtitlePlayback() {
@@ -308,15 +489,21 @@ function updateSubtitlePlayback() {
   const video = document.querySelector("video.html5-main-video") || document.querySelector("video");
   if (!video) return;
   const currentMs = video.currentTime * 1000;
-  if (currentMs < state.coveredStartMs - 1500 || currentMs > state.coveredEndMs + 1500) {
-    state.coveredStartMs = Math.max(0, currentMs - 5000);
-    state.coveredEndMs = currentMs + PIT_SUBTITLE_INITIAL_WINDOW_MS;
-    queueSubtitleWindow(state.coveredStartMs, state.coveredEndMs);
-  } else if (currentMs + PIT_SUBTITLE_PREFETCH_LEAD_MS >= state.coveredEndMs) {
-    const nextStart = state.coveredEndMs;
-    state.coveredEndMs += PIT_SUBTITLE_NEXT_WINDOW_MS;
-    queueSubtitleWindow(nextStart, state.coveredEndMs);
-  }
+  scheduleSubtitleBuffer(currentMs);
+  renderSubtitleCue(findSubtitleCue(state.cues, currentMs));
+}
+
+function handleSubtitleSeek() {
+  const state = PIT_STATE.subtitle;
+  if (!state?.enabled || !state.video) return;
+  // Match a media-player queue flush: a new epoch makes late results from the
+  // previous playback position harmless even if cancellation races the reply.
+  state.queueEpoch += 1;
+  clearPendingSubtitleJobs(state);
+  cancelActiveSubtitleRequests(state);
+  state.inFlightCueIds.clear();
+  const currentMs = Math.max(0, state.video.currentTime * 1000);
+  scheduleSubtitleBuffer(currentMs, { forceWarm: true });
   renderSubtitleCue(findSubtitleCue(state.cues, currentMs));
 }
 
@@ -337,49 +524,91 @@ function findSubtitleCue(cues, currentMs) {
   return candidate && currentMs <= candidate.endMs + 250 ? candidate : null;
 }
 
-function ensureSubtitleOverlay() {
+function ensureSubtitleTranslationLine() {
   const state = PIT_STATE.subtitle;
-  if (!state || state.overlay?.host?.isConnected) return;
-  const player = document.querySelector(".html5-video-player");
-  if (!player) return;
-  const host = document.createElement("div");
-  host.id = "pit-youtube-subtitles";
+  if (!state) return null;
+  const captionWindows = Array.from(
+    document.querySelectorAll(".ytp-caption-window-container .caption-window")
+  );
+  const captionWindow = captionWindows.reverse().find((candidate) => (
+    candidate.querySelector(".ytp-caption-segment:not(.pit-youtube-caption-translation)")
+  ));
+  const captionsText = captionWindow?.querySelector(".captions-text");
+  if (!captionsText) {
+    state.nativeLine?.host.remove();
+    state.nativeLine = null;
+    return null;
+  }
+  if (
+    state.nativeLine?.host?.isConnected
+    && state.nativeLine.captionsText === captionsText
+  ) {
+    syncNativeSubtitleStyle(state.nativeLine.translated, captionsText);
+    return state.nativeLine;
+  }
+
+  state.nativeLine?.host.remove();
+  const host = document.createElement("span");
+  host.className = "caption-visual-line pit-youtube-caption-translation-line";
   host.dataset.pitSkip = "true";
-  const shadow = host.attachShadow({ mode: "open" });
-  shadow.innerHTML = `
-    <style>
-      :host { position:absolute; inset:0; z-index:61; pointer-events:none; display:block; }
-      .wrap { position:absolute; left:8%; right:8%; bottom:12%; display:grid; justify-items:center; gap:4px; text-align:center; }
-      :host([data-native-captions="true"]) .wrap { bottom:22%; }
-      .line { max-width:min(900px, 90vw); padding:3px 9px; border-radius:5px; background:rgba(0,0,0,.76); color:#fff; font:600 clamp(15px,2.1vw,28px)/1.28 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; text-shadow:0 1px 2px #000; box-decoration-break:clone; }
-      .source { color:rgba(255,255,255,.88); font-size:clamp(12px,1.55vw,20px); font-weight:500; }
-      .line:empty { display:none; }
-    </style>
-    <div class="wrap" aria-live="off"><div class="line source"></div><div class="line translated"></div></div>
-  `;
-  player.appendChild(host);
-  state.overlay = {
-    host,
-    source: shadow.querySelector(".source"),
-    translated: shadow.querySelector(".translated")
-  };
+  host.style.display = "block";
+  const translated = document.createElement("span");
+  translated.className = "ytp-caption-segment pit-youtube-caption-translation";
+  translated.dataset.pitSkip = "true";
+  translated.dir = "auto";
+  host.appendChild(translated);
+  captionsText.appendChild(host);
+  syncNativeSubtitleStyle(translated, captionsText);
+  state.nativeLine = { host, translated, captionsText };
+  return state.nativeLine;
+}
+
+function syncNativeSubtitleStyle(translated, captionsText) {
+  const nativeSegments = captionsText.querySelectorAll(
+    ".ytp-caption-segment:not(.pit-youtube-caption-translation)"
+  );
+  const nativeSegment = nativeSegments[nativeSegments.length - 1];
+  if (!nativeSegment) return;
+  translated.style.cssText = nativeSegment.style.cssText;
+  translated.style.display = "inline-block";
+  translated.style.whiteSpace = "pre-wrap";
+  translated.style.lineHeight = "1.16";
+  translated.style.overflowWrap = "break-word";
+
+  const nativeFontSize = Number.parseFloat(nativeSegment.style.fontSize);
+  if (Number.isFinite(nativeFontSize) && nativeFontSize > 0) {
+    translated.style.fontSize = `${Math.round(nativeFontSize * 7.8) / 10}px`;
+  }
+
+  const host = translated.parentElement;
+  const captionWindow = captionsText.closest(".caption-window");
+  const player = captionsText.closest(".html5-video-player");
+  const nativeWidth = Number.parseFloat(captionWindow?.style.width) || 0;
+  const playerWidth = player?.clientWidth || 0;
+  const translationWidth = Math.round(
+    playerWidth > 0
+      ? Math.min(960, Math.max(nativeWidth, playerWidth * 0.72))
+      : Math.max(nativeWidth, 720)
+  );
+  host.style.position = "relative";
+  host.style.left = "50%";
+  host.style.width = "max-content";
+  host.style.maxWidth = `${translationWidth}px`;
+  host.style.transform = "translateX(-50%)";
+  translated.style.maxWidth = `${translationWidth}px`;
 }
 
 function renderSubtitleCue(cue) {
   const state = PIT_STATE.subtitle;
-  ensureSubtitleOverlay();
-  if (!state?.overlay) return;
+  const nativeLine = ensureSubtitleTranslationLine();
+  if (!state || !nativeLine) return;
   if (!cue) {
     state.lastCueId = "";
-    state.overlay.source.textContent = "";
-    state.overlay.translated.textContent = "";
+    nativeLine.translated.textContent = "";
     return;
   }
   const translation = state.translations.get(cue.id) || "";
-  const nativeCaptionsVisible = document.querySelector(".ytp-subtitles-button")?.getAttribute("aria-pressed") === "true";
-  state.overlay.host.dataset.nativeCaptions = String(nativeCaptionsVisible);
-  state.overlay.source.textContent = nativeCaptionsVisible ? "" : cue.text;
-  state.overlay.translated.textContent = translation;
+  nativeLine.translated.textContent = translation;
   state.lastCueId = cue.id;
 }
 
@@ -388,8 +617,28 @@ function stopSubtitleTranslation({ preservePreference = true } = {}) {
   if (!state) return;
   state.enabled = false;
   state.generation += 1;
+  state.queueEpoch += 1;
   window.clearInterval(state.scheduler);
   state.scheduler = null;
+  state.video?.removeEventListener("seeked", handleSubtitleSeek);
+  state.video = null;
+  cancelActiveSubtitleRequests(state);
+  clearPendingSubtitleJobs(state);
+  state.inFlightCueIds.clear();
+  state.visibleDrain = null;
+  state.backgroundDrain = null;
+  state.nativeLine?.host.remove();
+  state.nativeLine = null;
+  state.cues = [];
+  state.translations.clear();
+  state.settings = null;
+  state.sourceTrack = null;
+  state.timedTextUrl = "";
+  if (!preservePreference) state.wantsEnabled = false;
+  updateSubtitleButton();
+}
+
+function cancelActiveSubtitleRequests(state) {
   const requestIds = Array.from(state.activeRequestIds);
   const requestsByEndpoint = new Map();
   requestIds.forEach((requestId) => {
@@ -401,6 +650,7 @@ function stopSubtitleTranslation({ preservePreference = true } = {}) {
     PIT_STATE.translationRequestEndpoints.delete(requestId);
   });
   requestsByEndpoint.forEach((endpointRequestIds, endpoint) => {
+    if (disableStaleGlossContext()) return;
     chrome.runtime.sendMessage({
       type: "cancel-translation",
       requestIds: endpointRequestIds,
@@ -408,19 +658,14 @@ function stopSubtitleTranslation({ preservePreference = true } = {}) {
     }).catch(() => {});
   });
   state.activeRequestIds.clear();
-  state.pendingWindows = [];
-  state.pendingWindowKeys.clear();
-  state.inFlightCueIds.clear();
-  state.windowDrain = null;
-  state.overlay?.host.remove();
-  state.overlay = null;
-  state.cues = [];
-  state.translations.clear();
-  state.sourceTrack = null;
-  state.coveredStartMs = 0;
-  state.coveredEndMs = 0;
-  if (!preservePreference) state.wantsEnabled = false;
-  updateSubtitleButton();
+}
+
+function clearPendingSubtitleJobs(state) {
+  state.pendingJobs.forEach((job) => {
+    job.cues.forEach((cue) => state.queuedCueIds.delete(cue.id));
+  });
+  state.pendingJobs = [];
+  state.queuedCueIds.clear();
 }
 
 function updateSubtitleButton(mode = "") {
@@ -441,6 +686,7 @@ function updateSubtitleButton(mode = "") {
 function showSubtitleError(error) {
   const state = PIT_STATE.subtitle;
   if (!state) return;
+  if (disableStaleGlossContext()) return;
   stopSubtitleTranslation({ preservePreference: false });
   chrome.storage.local.set({ translateSubtitles: false }).finally(() => {
     if (!state.button) return;

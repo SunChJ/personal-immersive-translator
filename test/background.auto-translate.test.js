@@ -109,10 +109,14 @@ test("cancelling a translation aborts the active fetch and forwards the request 
 
 test("subtitle fetches are restricted to YouTube timed-text URLs", () => {
   const runtime = createBackgroundRuntime();
-  assert.match(
-    runtime.normalizeYouTubeSubtitleUrl("https://www.youtube.com/api/timedtext?v=video&lang=en"),
-    /fmt=json3/
-  );
+  const normalized = new URL(runtime.normalizeYouTubeSubtitleUrl(
+    "https://www.youtube.com/api/timedtext?v=video&lang=en&pot=proof&potc=context"
+  ));
+  assert.equal(normalized.searchParams.get("fmt"), "json3");
+  assert.equal(normalized.searchParams.get("pot"), "proof");
+  assert.equal(normalized.searchParams.get("potc"), "context");
+  assert.equal(normalized.searchParams.get("c"), "WEB");
+  assert.equal(normalized.searchParams.get("cplayer"), "UNIPLAYER");
   assert.throws(
     () => runtime.normalizeYouTubeSubtitleUrl("https://www.youtube.com/watch?v=video"),
     /unsupported/i

@@ -1,5 +1,6 @@
 // Floating translate button: mount, drag/snap, settings sync, health check.
 function initFloatingControl() {
+  if (disableStaleGlossContext()) return;
   injectStyles();
 
   chrome.storage.local.get({ showFloatingButton: true }, (settings) => {
@@ -140,7 +141,9 @@ function mountFloatingControl() {
   updateFloatingState();
   restoreFloatingPosition(root);
   wireFloatingControl(root);
-  hydrateFloatingSettings(root);
+  hydrateFloatingSettings(root).catch(() => {
+    disableStaleGlossContext();
+  });
 }
 
 function wireFloatingControl(root) {
@@ -204,7 +207,7 @@ function wireFloatingControl(root) {
   });
 
   fab.addEventListener("click", () => {
-    if (suppressClick) {
+    if (suppressClick || disableStaleGlossContext()) {
       return;
     }
     toggleTranslationFromFloating();
@@ -212,15 +215,19 @@ function wireFloatingControl(root) {
 
   fab.addEventListener("contextmenu", (event) => {
     event.preventDefault();
+    if (disableStaleGlossContext()) return;
     const expanded = root.dataset.expanded !== "true";
     root.dataset.expanded = expanded ? "true" : "false";
     if (expanded) {
-      hydrateFloatingSettings(root);
+      hydrateFloatingSettings(root).catch(() => {
+        disableStaleGlossContext();
+      });
     }
   });
 
   const menu = root.querySelector(".pit-floating-menu");
   menu.addEventListener("click", async (event) => {
+    if (disableStaleGlossContext()) return;
     const actionEl = event.target.closest("[data-action]");
     if (!actionEl || !menu.contains(actionEl)) {
       return;
@@ -247,6 +254,7 @@ function wireFloatingControl(root) {
   });
 
   menu.addEventListener("change", async (event) => {
+    if (disableStaleGlossContext()) return;
     if (!event.target.matches("[data-setting]")) {
       return;
     }
@@ -262,6 +270,7 @@ function wireFloatingControl(root) {
   });
 
   menu.addEventListener("input", async (event) => {
+    if (disableStaleGlossContext()) return;
     if (event.target.dataset.setting !== "customTargetLanguage") {
       return;
     }
@@ -397,6 +406,7 @@ async function checkFloatingHealth(root, endpoint) {
     badge.dataset.ok = "true";
     updateFloatingState();
   } catch {
+    if (disableStaleGlossContext()) return;
     serverState.textContent = "Not running";
     latency.textContent = "--";
     badge.textContent = "OFF";
@@ -477,12 +487,16 @@ async function translateFromFloating() {
     updateFloatingState();
     setFloatingStatus(`Done: ${summary.translated}`);
   } catch (error) {
+    if (disableStaleGlossContext()) return;
     updateFloatingState();
     setFloatingStatus("Failed");
   }
 }
 
 function readTranslationSettings() {
+  if (disableStaleGlossContext()) {
+    return Promise.reject(glossContextInvalidatedError());
+  }
   return chrome.storage.local.get({
     targetLanguage: PIT_DEFAULT_TARGET_LANGUAGE,
     endpoint: PIT_DEFAULT_ENDPOINT,

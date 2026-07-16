@@ -233,7 +233,7 @@ async function fetchYouTubeSubtitles(message, sender = {}) {
   }
   const url = normalizeYouTubeSubtitleUrl(message.url);
   const response = await fetchWithTimeout(url, {
-    credentials: "omit",
+    credentials: "include",
     headers: { Accept: "application/json" }
   }, YOUTUBE_SUBTITLE_TIMEOUT_MS);
   if (!response.ok) {
@@ -247,7 +247,9 @@ async function fetchYouTubeSubtitles(message, sender = {}) {
   try {
     subtitles = JSON.parse(text);
   } catch {
-    throw new Error("YouTube returned an invalid subtitle response.");
+    const protection = new URL(url).searchParams.has("pot") ? "POT" : "base URL";
+    const responseKind = text.trim() ? `${text.length} bytes` : "empty body";
+    throw new Error(`YouTube returned an invalid subtitle response (${responseKind}, ${protection}).`);
   }
   return { subtitles };
 }
@@ -264,6 +266,11 @@ function normalizeYouTubeSubtitleUrl(value) {
     throw new Error("Unsupported YouTube subtitle URL.");
   }
   url.searchParams.set("fmt", "json3");
+  url.searchParams.set("xorb", "2");
+  url.searchParams.set("xobt", "3");
+  url.searchParams.set("xovt", "3");
+  url.searchParams.set("c", "WEB");
+  url.searchParams.set("cplayer", "UNIPLAYER");
   return url.toString();
 }
 

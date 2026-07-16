@@ -33,6 +33,55 @@ test("media helpers normalize batch settings, speech chunks, and YouTube cues", 
     current: "Second caption",
     firstEndMs: 2200
   });
+  assert.equal(result.timedText.valid, "https://www.youtube.com/api/timedtext?v=video-123&lang=en&pot=proof");
+  assert.equal(result.timedText.wrongVideo, "");
+  assert.equal(result.timedText.wrongHost, "");
+  assert.equal(result.pageFetch.ok, true);
+  assert.equal(result.pageFetch.subtitles.events[0].segs[0].utf8, "Hello");
+});
+
+test("subtitle buffering prioritizes nearby cues and measures completed coverage", async () => {
+  const result = await getBrowserSuiteResult("subtitle-buffer");
+  assert.equal(result.readyBeforeMs, 0);
+  assert.equal(result.readyAfterMs, 45_000);
+  assert.deepEqual(result.priorities, ["visible", "background", "background"]);
+  assert.deepEqual(result.batchSizes, [4, 5, 1]);
+  assert.ok(result.batchSizes.every((size) => size <= 5));
+});
+
+test("subtitle seeking flushes queued and active work with a new epoch", async () => {
+  const result = await getBrowserSuiteResult("subtitle-seek-flush");
+  assert.equal(result.queueEpoch, 8);
+  assert.equal(result.pendingJobs, 0);
+  assert.equal(result.queuedCues, 0);
+  assert.equal(result.activeRequests, 0);
+  assert.deepEqual(result.cancelledRequests, ["old-subtitle-request"]);
+});
+
+test("an invalidated extension context shuts down stale page controls", async () => {
+  const result = await getBrowserSuiteResult("invalidated-extension-context");
+  assert.equal(result.disabled, true);
+  assert.equal(result.contextInvalidated, true);
+  assert.equal(result.floatingRemoved, true);
+  assert.equal(result.subtitleEnabled, false);
+  assert.equal(result.subtitleGeneration, 1);
+  assert.equal(
+    result.settingsError,
+    "Gloss was updated. Refresh this page to reconnect the extension."
+  );
+});
+
+test("YouTube translations render as a new line inside native captions", async () => {
+  const result = await getBrowserSuiteResult("youtube-native-captions");
+  assert.equal(result.translation, "原生字幕内的译文");
+  assert.equal(result.insideCaptionWindow, true);
+  assert.equal(result.visualLines, 2);
+  assert.equal(result.background, "rgba(8, 8, 8, 0.75)");
+  assert.equal(result.nativeFontSize, "33.6px");
+  assert.equal(result.translationFontSize, "26.2px");
+  assert.equal(result.translationMaxWidth, "720px");
+  assert.equal(result.detachedOverlay, false);
+  assert.equal(result.reattachedAfterNativeRedraw, true);
 });
 
 test("long-page tail reserves one native turn for foreground work", async () => {
@@ -593,6 +642,7 @@ function createHarnessHtml(routeSources, contentSources) {
       clearTranslations();
       document.body.innerHTML = html;
       window.__pitCalls.length = 0;
+      window.__pitCancelledRequests.length = 0;
       window.__pitRuntime.send = window.__pitDefaultSend;
       window.__pitHealth = { ...window.__pitDefaultHealth };
       PIT_STATE.provider = "";
@@ -623,6 +673,21 @@ function createHarnessHtml(routeSources, contentSources) {
             { tStartMs: 2300, dDurationMs: 1800, segs: [{ utf8: "Second caption" }] }
           ]
         });
+        const handlePageFetch = (event) => {
+          const request = JSON.parse(String(event.detail || ""));
+          window.dispatchEvent(new CustomEvent("pit:youtube-subtitles-response", {
+            detail: JSON.stringify({
+              requestId: request.requestId,
+              ok: true,
+              subtitles: { events: [{ tStartMs: 0, segs: [{ utf8: "Hello" }] }] }
+            })
+          }));
+        };
+        window.addEventListener("pit:fetch-youtube-subtitles", handlePageFetch);
+        const pageFetch = await requestYouTubeSubtitlesFromPage(
+          "https://www.youtube.com/api/timedtext?v=video-123&lang=en&pot=proof"
+        );
+        window.removeEventListener("pit:fetch-youtube-subtitles", handlePageFetch);
         return {
           batch: { items: settings.batchSize, characters: settings.batchCharLimit },
           speechLanguage: speechLanguageForTarget("Chinese (Traditional)"),
@@ -631,7 +696,169 @@ function createHarnessHtml(routeSources, contentSources) {
             count: cues.length,
             current: findSubtitleCue(cues, 2500)?.text || "",
             firstEndMs: cues[0].endMs
-          }
+          },
+          timedText: {
+            valid: usableTimedTextUrl(
+              "https://www.youtube.com/api/timedtext?v=video-123&lang=en&pot=proof",
+              "video-123"
+            ),
+            wrongVideo: usableTimedTextUrl(
+              "https://www.youtube.com/api/timedtext?v=other&lang=en&pot=proof",
+              "video-123"
+            ),
+            wrongHost: usableTimedTextUrl(
+              "https://youtube.example/api/timedtext?v=video-123&lang=en&pot=proof",
+              "video-123"
+            )
+          },
+          pageFetch
+        };
+      }
+
+      if (name === "subtitle-buffer") {
+        setBody("");
+        PIT_STATE.subtitle = createSubtitleState();
+        const state = PIT_STATE.subtitle;
+        state.enabled = true;
+        state.generation = 1;
+        state.queueEpoch = 1;
+        state.videoId = "buffer-test";
+        state.settings = {
+          batchSize: 8,
+          batchCharLimit: 800,
+          endpoint: "http://127.0.0.1:8787",
+          targetLanguage: "Chinese (Simplified)"
+        };
+        state.cues = Array.from({ length: 12 }, (_, index) => ({
+          id: "buffer-cue-" + index,
+          startMs: index * 5000,
+          endMs: index * 5000 + 4000,
+          text: "Subtitle cue " + index
+        }));
+        const readyBeforeMs = subtitleReadyEndMs(state, 0, 45_000);
+        scheduleSubtitleBuffer(0, { forceWarm: true });
+        await waitFor(
+          () => state.translations.size === 10,
+          4000,
+          "the hot and warm subtitle buffers"
+        );
+        const result = {
+          readyBeforeMs,
+          readyAfterMs: subtitleReadyEndMs(state, 0, 45_000),
+          priorities: translationCalls().map((call) => call.priority),
+          batchSizes: translationCalls().map((call) => call.items.length)
+        };
+        stopSubtitleTranslation({ preservePreference: false });
+        return result;
+      }
+
+      if (name === "subtitle-seek-flush") {
+        setBody("<video></video>");
+        PIT_STATE.subtitle = createSubtitleState();
+        const state = PIT_STATE.subtitle;
+        const video = document.querySelector("video");
+        Object.defineProperty(video, "currentTime", { configurable: true, value: 60, writable: true });
+        state.enabled = true;
+        state.queueEpoch = 7;
+        state.video = video;
+        state.settings = {
+          batchSize: 8,
+          batchCharLimit: 800,
+          endpoint: "http://127.0.0.1:8787",
+          targetLanguage: "Chinese (Simplified)"
+        };
+        const queuedCue = { id: "old-cue", startMs: 0, endMs: 3000, text: "Old cue" };
+        state.pendingJobs = [{ cues: [queuedCue], epoch: 7, priority: "background", sequence: 1 }];
+        state.queuedCueIds.add(queuedCue.id);
+        state.activeRequestIds.add("old-subtitle-request");
+        PIT_STATE.translationRequestEndpoints.set(
+          "old-subtitle-request",
+          "http://127.0.0.1:8787"
+        );
+        handleSubtitleSeek();
+        await waitFor(
+          () => window.__pitCancelledRequests.includes("old-subtitle-request"),
+          2000,
+          "the stale subtitle request cancellation"
+        );
+        const result = {
+          queueEpoch: state.queueEpoch,
+          pendingJobs: state.pendingJobs.length,
+          queuedCues: state.queuedCueIds.size,
+          activeRequests: state.activeRequestIds.size,
+          cancelledRequests: [...window.__pitCancelledRequests]
+        };
+        stopSubtitleTranslation({ preservePreference: false });
+        return result;
+      }
+
+      if (name === "invalidated-extension-context") {
+        setBody('<div id="pit-floating"></div>');
+        PIT_STATE.floating = document.getElementById("pit-floating");
+        PIT_STATE.subtitle = createSubtitleState();
+        PIT_STATE.subtitle.enabled = true;
+        PIT_STATE.subtitle.scheduler = window.setInterval(() => {}, 1000);
+        const originalStorage = chrome.storage;
+        let settingsError = "";
+        let disabled = false;
+        try {
+          chrome.storage = undefined;
+          disabled = disableStaleGlossContext();
+          await readTranslationSettings();
+        } catch (error) {
+          settingsError = error instanceof Error ? error.message : String(error);
+        } finally {
+          chrome.storage = originalStorage;
+        }
+        const result = {
+          disabled,
+          contextInvalidated: PIT_STATE.extensionContextInvalidated,
+          floatingRemoved: !document.getElementById("pit-floating"),
+          subtitleEnabled: PIT_STATE.subtitle.enabled,
+          subtitleGeneration: PIT_STATE.subtitle.generation,
+          settingsError
+        };
+        PIT_STATE.extensionContextInvalidated = false;
+        PIT_STATE.subtitle = null;
+        return result;
+      }
+
+      if (name === "youtube-native-captions") {
+        setBody(
+          '<div class="ytp-caption-window-container"><div class="caption-window">' +
+          '<span class="captions-text" style="display:block">' +
+          '<span class="caption-visual-line" style="display:block">' +
+          '<span class="ytp-caption-segment" style="display:inline-block;white-space:pre-wrap;' +
+          'background:rgba(8, 8, 8, 0.75);font-size:33.6px;color:rgb(255, 255, 255)">' +
+          'Native subtitle</span></span></span></div></div>'
+        );
+        PIT_STATE.subtitle = createSubtitleState();
+        const cue = { id: "yt-test", startMs: 0, endMs: 3000, text: "Native subtitle" };
+        PIT_STATE.subtitle.translations.set(cue.id, "原生字幕内的译文");
+        renderSubtitleCue(cue);
+        const firstTranslation = document.querySelector(".pit-youtube-caption-translation");
+        const captionsText = document.querySelector(".captions-text");
+        captionsText.innerHTML =
+          '<span class="caption-visual-line" style="display:block">' +
+          '<span class="ytp-caption-segment" style="display:inline-block;white-space:pre-wrap;' +
+          'background:rgba(8, 8, 8, 0.75);font-size:33.6px;color:rgb(255, 255, 255)">' +
+          'Redrawn native subtitle</span></span>';
+        renderSubtitleCue(cue);
+        const translation = document.querySelector(".pit-youtube-caption-translation");
+        return {
+          translation: translation?.textContent || "",
+          insideCaptionWindow: Boolean(translation?.closest(".caption-window")),
+          visualLines: document.querySelectorAll(".captions-text > .caption-visual-line").length,
+          background: translation?.style.background || "",
+          nativeFontSize: document.querySelector(
+            ".ytp-caption-segment:not(.pit-youtube-caption-translation)"
+          )?.style.fontSize || "",
+          translationFontSize: translation?.style.fontSize || "",
+          translationMaxWidth: translation?.style.maxWidth || "",
+          detachedOverlay: Boolean(document.querySelector("#pit-youtube-subtitles")),
+          reattachedAfterNativeRedraw: Boolean(
+            translation && translation !== firstTranslation && translation.parentElement === captionsText.lastElementChild
+          )
         };
       }
 
@@ -1334,6 +1561,10 @@ function createHarnessHtml(routeSources, contentSources) {
       for (const name of [
         "adaptive-batches",
         "media-helpers",
+        "subtitle-buffer",
+        "subtitle-seek-flush",
+        "invalidated-extension-context",
+        "youtube-native-captions",
         "character-budget",
         "newest-pending-first",
         "pending-batch-order",

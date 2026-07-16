@@ -83,3 +83,57 @@ function nextAnimationFrame() {
     window.requestAnimationFrame(() => resolve());
   });
 }
+
+function hasGlossExtensionContext() {
+  try {
+    return Boolean(globalThis.chrome?.runtime?.sendMessage && globalThis.chrome?.storage?.local);
+  } catch {
+    return false;
+  }
+}
+
+function disableStaleGlossContext() {
+  if (hasGlossExtensionContext()) return false;
+  if (typeof PIT_STATE === "undefined" || PIT_STATE.extensionContextInvalidated) return true;
+
+  PIT_STATE.extensionContextInvalidated = true;
+  PIT_STATE.translationEpoch += 1;
+  PIT_STATE.cancelRequested = true;
+  PIT_STATE.selectionRequestId += 1;
+  window.clearTimeout(PIT_STATE.dynamicTimer);
+  window.clearTimeout(PIT_STATE.pendingTimer);
+  window.clearTimeout(PIT_STATE.routeTranslationTimer);
+  window.clearTimeout(PIT_STATE.selectionTimer);
+  window.clearTimeout(PIT_STATE.floatingStatusTimer);
+  window.clearInterval(PIT_STATE.routePollTimer);
+  PIT_STATE.routeSettlingTimers.forEach((timer) => window.clearTimeout(timer));
+  PIT_STATE.routeSettlingTimers = [];
+  PIT_STATE.dynamicObserver?.disconnect();
+  PIT_STATE.lazyObserver?.disconnect();
+  PIT_STATE.translationStreams.clear();
+
+  const subtitle = PIT_STATE.subtitle;
+  if (subtitle) {
+    subtitle.enabled = false;
+    subtitle.generation += 1;
+    subtitle.queueEpoch += 1;
+    window.clearInterval(subtitle.scheduler);
+    subtitle.video?.removeEventListener("seeked", handleSubtitleSeek);
+    subtitle.button?.remove();
+    subtitle.nativeLine?.host.remove();
+    subtitle.activeRequestIds.clear();
+    subtitle.pendingJobs = [];
+    subtitle.inFlightCueIds.clear();
+    subtitle.queuedCueIds.clear();
+  }
+
+  PIT_STATE.floating?.remove();
+  PIT_STATE.selectionTooltip?.remove();
+  PIT_STATE.floating = null;
+  PIT_STATE.selectionTooltip = null;
+  return true;
+}
+
+function glossContextInvalidatedError() {
+  return new Error("Gloss was updated. Refresh this page to reconnect the extension.");
+}

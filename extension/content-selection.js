@@ -1,5 +1,6 @@
 // Selection-translation tooltip: init, render, copy, speech playback.
 function initSelectionTranslation() {
+  if (disableStaleGlossContext()) return;
   chrome.storage.local.get({ translateSelection: true }, (settings) => {
     PIT_STATE.selectionTranslationEnabled = settings.translateSelection !== false;
   });
@@ -19,7 +20,11 @@ function initSelectionTranslation() {
 }
 
 function scheduleSelectionTranslation(event) {
-  if (!PIT_STATE.selectionTranslationEnabled || event.target?.closest?.("#pit-floating, #pit-selection-tooltip")) {
+  if (
+    disableStaleGlossContext()
+    || !PIT_STATE.selectionTranslationEnabled
+    || event.target?.closest?.("#pit-floating, #pit-selection-tooltip")
+  ) {
     return;
   }
 
