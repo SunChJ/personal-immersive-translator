@@ -114,17 +114,31 @@ function disableStaleGlossContext() {
 
   const subtitle = PIT_STATE.subtitle;
   if (subtitle) {
+    const bufferGate = subtitle.bufferGate;
+    if (bufferGate?.player) delete bufferGate.player.dataset.pitSubtitleBuffering;
+    if (bufferGate?.shouldResume && !bufferGate.video.ended) {
+      bufferGate.video.play().catch(() => {});
+    }
+    subtitle.bufferGate = null;
     subtitle.enabled = false;
     subtitle.generation += 1;
     subtitle.queueEpoch += 1;
     window.clearInterval(subtitle.scheduler);
+    subtitle.video?.removeEventListener("seeking", handleSubtitleSeeking);
     subtitle.video?.removeEventListener("seeked", handleSubtitleSeek);
+    subtitle.captionObserver?.disconnect();
+    subtitle.captionObserver = null;
+    subtitle.captionObserverRoot = null;
     subtitle.button?.remove();
     subtitle.nativeLine?.host.remove();
     subtitle.activeRequestIds.clear();
     subtitle.pendingJobs = [];
     subtitle.inFlightCueIds.clear();
     subtitle.queuedCueIds.clear();
+    subtitle.retryAfterByCueId.clear();
+    subtitle.retryAttemptsByCueId.clear();
+    subtitle.retryTimers.forEach((timer) => window.clearTimeout(timer));
+    subtitle.retryTimers.clear();
   }
 
   PIT_STATE.floating?.remove();

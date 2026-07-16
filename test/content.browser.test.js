@@ -43,10 +43,34 @@ test("media helpers normalize batch settings, speech chunks, and YouTube cues", 
 test("subtitle buffering prioritizes nearby cues and measures completed coverage", async () => {
   const result = await getBrowserSuiteResult("subtitle-buffer");
   assert.equal(result.readyBeforeMs, 0);
-  assert.equal(result.readyAfterMs, 45_000);
+  assert.equal(result.readyAfterMs, 60_000);
   assert.deepEqual(result.priorities, ["visible", "background", "background"]);
-  assert.deepEqual(result.batchSizes, [4, 5, 1]);
+  assert.deepEqual(result.batchSizes, [5, 5, 2]);
   assert.ok(result.batchSizes.every((size) => size <= 5));
+  assert.deepEqual(result.doubleSpeedWindow, {
+    hotLookAheadMs: 40_000,
+    readyLowWaterMs: 50_000,
+    readyTargetMs: 120_000
+  });
+});
+
+test("subtitle playback waits for a translated cushion before showing captions", async () => {
+  const result = await getBrowserSuiteResult("subtitle-playback-gate");
+  assert.equal(result.pausedDuringBuffer, true);
+  assert.equal(result.hiddenDuringBuffer, true);
+  assert.equal(result.bufferReady, true);
+  assert.equal(result.resumedAfterBuffer, true);
+  assert.equal(result.hiddenAfterBuffer, false);
+  assert.equal(result.staleGateIgnored, true);
+});
+
+test("subtitle buffering refills across playback windows and retries transient tail failures", async () => {
+  const result = await getBrowserSuiteResult("subtitle-sustained-refill");
+  assert.equal(result.transientFailureObserved, true);
+  assert.equal(result.subtitleEnabled, true);
+  assert.deepEqual(result.readyEndsMs, [60_000, 100_000, 140_000, 180_000]);
+  assert.equal(result.lastTranslatedCue, "sustained-cue-36");
+  assert.ok(result.requestCount >= 10);
 });
 
 test("subtitle seeking flushes queued and active work with a new epoch", async () => {
@@ -79,9 +103,10 @@ test("YouTube translations render as a new line inside native captions", async (
   assert.equal(result.background, "rgba(8, 8, 8, 0.75)");
   assert.equal(result.nativeFontSize, "33.6px");
   assert.equal(result.translationFontSize, "26.2px");
-  assert.equal(result.translationMaxWidth, "720px");
+  assert.equal(result.translationMaxWidth, "648px");
   assert.equal(result.detachedOverlay, false);
   assert.equal(result.reattachedAfterNativeRedraw, true);
+  assert.equal(result.reattachedBeforeNextFrame, true);
 });
 
 test("long-page tail reserves one native turn for foreground work", async () => {
@@ -735,18 +760,151 @@ function createHarnessHtml(routeSources, contentSources) {
           endMs: index * 5000 + 4000,
           text: "Subtitle cue " + index
         }));
-        const readyBeforeMs = subtitleReadyEndMs(state, 0, 45_000);
+        const readyBeforeMs = subtitleReadyEndMs(state, 0, 60_000);
         scheduleSubtitleBuffer(0, { forceWarm: true });
         await waitFor(
-          () => state.translations.size === 10,
+          () => state.translations.size === 12,
           4000,
           "the hot and warm subtitle buffers"
         );
         const result = {
           readyBeforeMs,
-          readyAfterMs: subtitleReadyEndMs(state, 0, 45_000),
+          readyAfterMs: subtitleReadyEndMs(state, 0, 60_000),
           priorities: translationCalls().map((call) => call.priority),
-          batchSizes: translationCalls().map((call) => call.items.length)
+          batchSizes: translationCalls().map((call) => call.items.length),
+          doubleSpeedWindow: subtitleBufferWindowMs({ video: { playbackRate: 2 } })
+        };
+        stopSubtitleTranslation({ preservePreference: false });
+        return result;
+      }
+
+      if (name === "subtitle-playback-gate") {
+        setBody(
+          '<div class="html5-video-player"><video></video>' +
+          '<div class="ytp-caption-window-container"></div></div>'
+        );
+        PIT_STATE.subtitle = createSubtitleState();
+        const state = PIT_STATE.subtitle;
+        const video = document.querySelector("video");
+        let paused = false;
+        let playCalls = 0;
+        Object.defineProperty(video, "paused", {
+          configurable: true,
+          get() { return paused; }
+        });
+        video.pause = () => { paused = true; };
+        video.play = () => {
+          paused = false;
+          playCalls += 1;
+          return Promise.resolve();
+        };
+        state.enabled = true;
+        state.generation = 2;
+        state.queueEpoch = 3;
+        state.video = video;
+        state.cues = [
+          { id: "gate-0", startMs: 0, endMs: 2900, text: "First cue" },
+          { id: "gate-1", startMs: 3000, endMs: 6900, text: "Second cue" }
+        ];
+        const gate = beginSubtitleBufferGate(state, video, { hideCaptions: true });
+        const waiting = waitForSubtitleBuffer(state, 0, 6000, 2, 3, 1000);
+        const pausedDuringBuffer = paused;
+        const hiddenDuringBuffer = gate.player.dataset.pitSubtitleBuffering === "true";
+        state.translations.set("gate-0", "第一句");
+        state.translations.set("gate-1", "第二句");
+        const bufferReady = await waiting;
+        releaseSubtitleBufferGate(state, gate);
+        paused = false;
+        const staleGate = beginSubtitleBufferGate(state, video, { hideCaptions: true });
+        const currentGate = beginSubtitleBufferGate(
+          state,
+          video,
+          { hideCaptions: true, replace: true }
+        );
+        releaseSubtitleBufferGate(state, staleGate);
+        const staleGateIgnored = (
+          state.bufferGate === currentGate
+          && currentGate.player.dataset.pitSubtitleBuffering === "true"
+          && paused
+        );
+        releaseSubtitleBufferGate(state, currentGate);
+        return {
+          pausedDuringBuffer,
+          hiddenDuringBuffer,
+          bufferReady,
+          resumedAfterBuffer: playCalls >= 1,
+          hiddenAfterBuffer: "pitSubtitleBuffering" in gate.player.dataset,
+          staleGateIgnored
+        };
+      }
+
+      if (name === "subtitle-sustained-refill") {
+        setBody("");
+        PIT_STATE.subtitle = createSubtitleState();
+        const state = PIT_STATE.subtitle;
+        state.enabled = true;
+        state.generation = 4;
+        state.queueEpoch = 5;
+        state.videoId = "sustained-buffer-test";
+        state.video = { playbackRate: 1, removeEventListener() {} };
+        state.settings = {
+          batchSize: 8,
+          batchCharLimit: 800,
+          endpoint: "http://127.0.0.1:8787",
+          targetLanguage: "Chinese (Simplified)"
+        };
+        state.cues = Array.from({ length: 37 }, (_, index) => ({
+          id: "sustained-cue-" + index,
+          startMs: index * 5000,
+          endMs: index * 5000 + 4000,
+          text: "Sustained subtitle cue " + index
+        }));
+        let transientFailureObserved = false;
+        window.__pitRuntime.send = (message) => {
+          if (
+            message.type === "translate-batch"
+            && message.priority === "background"
+            && message.items.some((item) => item.id === "sustained-cue-20")
+            && !transientFailureObserved
+          ) {
+            transientFailureObserved = true;
+            return Promise.reject(new Error("transient subtitle tail failure"));
+          }
+          return window.__pitDefaultSend(message);
+        };
+
+        const readyEndsMs = [];
+        for (const currentMs of [0, 40_000, 80_000, 120_000]) {
+          const targetEndMs = currentMs + 60_000;
+          scheduleSubtitleBuffer(currentMs, { forceWarm: currentMs === 0 });
+          try {
+            await waitFor(() => {
+              scheduleSubtitleBuffer(currentMs);
+              return subtitleReadyEndMs(state, currentMs, targetEndMs) >= targetEndMs;
+            }, 6000, "the sustained subtitle refill at " + currentMs);
+          } catch (error) {
+            throw new Error(
+              error.message
+              + "; translated=" + state.translations.size
+              + "; queued=" + state.queuedCueIds.size
+              + "; inFlight=" + state.inFlightCueIds.size
+              + "; retrying=" + state.retryAfterByCueId.size
+              + "; pending=" + state.pendingJobs.length
+              + "; visibleDrain=" + Boolean(state.visibleDrain)
+              + "; backgroundDrain=" + Boolean(state.backgroundDrain)
+              + "; calls=" + translationCalls().length
+            );
+          }
+          readyEndsMs.push(subtitleReadyEndMs(state, currentMs, targetEndMs));
+        }
+        const result = {
+          transientFailureObserved,
+          subtitleEnabled: state.enabled,
+          readyEndsMs,
+          lastTranslatedCue: state.translations.has("sustained-cue-36")
+            ? "sustained-cue-36"
+            : "",
+          requestCount: translationCalls().length
         };
         stopSubtitleTranslation({ preservePreference: false });
         return result;
@@ -825,27 +983,40 @@ function createHarnessHtml(routeSources, contentSources) {
 
       if (name === "youtube-native-captions") {
         setBody(
+          '<div class="html5-video-player"><video></video>' +
           '<div class="ytp-caption-window-container"><div class="caption-window">' +
           '<span class="captions-text" style="display:block">' +
           '<span class="caption-visual-line" style="display:block">' +
           '<span class="ytp-caption-segment" style="display:inline-block;white-space:pre-wrap;' +
           'background:rgba(8, 8, 8, 0.75);font-size:33.6px;color:rgb(255, 255, 255)">' +
-          'Native subtitle</span></span></span></div></div>'
+          'Native subtitle</span></span></span></div></div></div>'
         );
         PIT_STATE.subtitle = createSubtitleState();
+        const state = PIT_STATE.subtitle;
+        const video = document.querySelector("video");
         const cue = { id: "yt-test", startMs: 0, endMs: 3000, text: "Native subtitle" };
-        PIT_STATE.subtitle.translations.set(cue.id, "原生字幕内的译文");
+        Object.defineProperty(video, "currentTime", { configurable: true, value: 1, writable: true });
+        state.enabled = true;
+        state.video = video;
+        state.cues = [cue];
+        state.translations.set(cue.id, "原生字幕内的译文");
         renderSubtitleCue(cue);
         const firstTranslation = document.querySelector(".pit-youtube-caption-translation");
         const captionsText = document.querySelector(".captions-text");
+        let reattachedBeforeNextFrame = false;
         captionsText.innerHTML =
           '<span class="caption-visual-line" style="display:block">' +
           '<span class="ytp-caption-segment" style="display:inline-block;white-space:pre-wrap;' +
           'background:rgba(8, 8, 8, 0.75);font-size:33.6px;color:rgb(255, 255, 255)">' +
           'Redrawn native subtitle</span></span>';
-        renderSubtitleCue(cue);
+        await new Promise((resolve) => requestAnimationFrame(() => {
+          reattachedBeforeNextFrame = Boolean(
+            document.querySelector(".pit-youtube-caption-translation")
+          );
+          resolve();
+        }));
         const translation = document.querySelector(".pit-youtube-caption-translation");
-        return {
+        const result = {
           translation: translation?.textContent || "",
           insideCaptionWindow: Boolean(translation?.closest(".caption-window")),
           visualLines: document.querySelectorAll(".captions-text > .caption-visual-line").length,
@@ -856,10 +1027,13 @@ function createHarnessHtml(routeSources, contentSources) {
           translationFontSize: translation?.style.fontSize || "",
           translationMaxWidth: translation?.style.maxWidth || "",
           detachedOverlay: Boolean(document.querySelector("#pit-youtube-subtitles")),
+          reattachedBeforeNextFrame,
           reattachedAfterNativeRedraw: Boolean(
             translation && translation !== firstTranslation && translation.parentElement === captionsText.lastElementChild
           )
         };
+        stopSubtitleTranslation({ preservePreference: false });
+        return result;
       }
 
       if (name === "character-budget") {
@@ -1562,6 +1736,8 @@ function createHarnessHtml(routeSources, contentSources) {
         "adaptive-batches",
         "media-helpers",
         "subtitle-buffer",
+        "subtitle-playback-gate",
+        "subtitle-sustained-refill",
         "subtitle-seek-flush",
         "invalidated-extension-context",
         "youtube-native-captions",
