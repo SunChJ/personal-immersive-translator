@@ -878,6 +878,31 @@ function injectStyles() {
       color: var(--pit-fl-success);
     }
 
+    .pit-youtube-subtitle-button {
+      box-sizing: border-box;
+      color: rgba(255, 255, 255, 0.9);
+      cursor: pointer;
+      font: 700 16px/48px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-align: center;
+    }
+
+    .pit-youtube-subtitle-button[data-active="true"] {
+      color: #72a7ff;
+      text-shadow: 0 0 8px rgba(60, 130, 255, 0.7);
+    }
+
+    .pit-youtube-subtitle-button[data-loading="true"] {
+      animation: pit-subtitle-pulse 900ms ease-in-out infinite alternate;
+    }
+
+    .pit-youtube-subtitle-button[data-error="true"] {
+      color: #ff7a72;
+    }
+
+    @keyframes pit-subtitle-pulse {
+      to { opacity: 0.45; }
+    }
+
     @keyframes pit-floating-orbit {
       to {
         transform: rotate(360deg);

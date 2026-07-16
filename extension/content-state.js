@@ -21,6 +21,9 @@ const PIT_STATE = {
   activeSelectionBridgeRequestId: "",
   activeSelectionEndpoint: "",
   selectionTranslationEnabled: true,
+  speechPlaybackId: 0,
+  speechButton: null,
+  subtitle: null,
   lazyObserver: null,
   pendingQueue: new Map(),
   pendingIds: new Set(),
@@ -44,6 +47,7 @@ const PIT_STATE = {
   providerConfigRevision: "",
   providerReasoning: "",
   lastModel: "",
+  extensionContextInvalidated: false,
   sessionId: createShortId()
 };
 

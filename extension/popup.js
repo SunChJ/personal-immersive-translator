@@ -17,7 +17,11 @@ const fields = {
   viewportFirst: document.getElementById("viewportFirst"),
   showFloatingButton: document.getElementById("showFloatingButton"),
   translateSelection: document.getElementById("translateSelection"),
+  translateSubtitles: document.getElementById("translateSubtitles"),
   autoTranslateAllPages: document.getElementById("autoTranslateAllPages"),
+  batchSize: document.getElementById("batchSize"),
+  batchCharLimit: document.getElementById("batchCharLimit"),
+  ttsRate: document.getElementById("ttsRate"),
   translate: document.getElementById("translate"),
   clear: document.getElementById("clear"),
   recheck: document.getElementById("recheck"),
@@ -63,7 +67,11 @@ async function init() {
     viewportFirst: true,
     showFloatingButton: true,
     translateSelection: true,
-    autoTranslateAllPages: false
+    autoTranslateAllPages: false,
+    translateSubtitles: false,
+    batchSize: PIT_DEFAULT_BATCH_ITEMS,
+    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
+    ttsRate: PIT_DEFAULT_TTS_RATE
   });
 
   setTargetLanguage(saved.targetLanguage);
@@ -77,6 +85,13 @@ async function init() {
   fields.viewportFirst.checked = saved.viewportFirst;
   fields.showFloatingButton.checked = saved.showFloatingButton;
   fields.translateSelection.checked = saved.translateSelection;
+  fields.translateSubtitles.checked = saved.translateSubtitles === true;
+  if (PIT_BROWSER_TARGET === "safari") {
+    fields.translateSubtitles.closest(".switch-row").hidden = true;
+  }
+  fields.batchSize.value = normalizeBatchItems(saved.batchSize);
+  fields.batchCharLimit.value = normalizeBatchCharLimit(saved.batchCharLimit);
+  fields.ttsRate.value = String(normalizeTtsRate(saved.ttsRate));
   updateTranslateSubtitle();
   fields.autoTranslateAllPages.checked = saved.autoTranslateAllPages === true;
   await chrome.storage.local.set(readSettings());
@@ -120,7 +135,7 @@ async function init() {
     });
   });
 
-  [fields.customTargetLanguage, fields.endpoint, fields.pairingToken, fields.mode, fields.bilingualStyle, fields.clearPrevious, fields.viewportFirst, fields.showFloatingButton, fields.translateSelection].forEach((field) => {
+  [fields.customTargetLanguage, fields.endpoint, fields.pairingToken, fields.mode, fields.bilingualStyle, fields.clearPrevious, fields.viewportFirst, fields.showFloatingButton, fields.translateSelection, fields.translateSubtitles, fields.batchSize, fields.batchCharLimit, fields.ttsRate].forEach((field) => {
     field.addEventListener("change", () => {
       if (field === fields.bilingualStyle) {
         syncBilingualStyleCards();
@@ -299,9 +314,11 @@ function readSettings() {
     viewportFirst: fields.viewportFirst.checked,
     showFloatingButton: fields.showFloatingButton.checked,
     translateSelection: fields.translateSelection.checked,
+    translateSubtitles: fields.translateSubtitles.checked,
     autoTranslateAllPages: fields.autoTranslateAllPages.checked,
-    batchSize: PIT_MAX_BATCH_ITEMS,
-    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
+    batchSize: normalizeBatchItems(fields.batchSize.value),
+    batchCharLimit: normalizeBatchCharLimit(fields.batchCharLimit.value),
+    ttsRate: normalizeTtsRate(fields.ttsRate.value),
     minChars: 4
   };
 }

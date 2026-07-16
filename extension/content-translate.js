@@ -188,9 +188,11 @@ function takeTranslationBatch(entries, offset, maxItems, maxChars) {
   return batch;
 }
 
-// Page work owns at most two native turns. The third stays free for an explicit
-// selection translation or another foreground interaction.
-const PIT_MAX_CONCURRENT_PAGE_BATCHES = 2;
+// GPT benefits from pipelining two page batches. Local llama already schedules
+// items internally, so a second browser batch only duplicates queueing and adds
+// memory pressure without improving interactive latency.
+const PIT_MAX_REMOTE_CONCURRENT_PAGE_BATCHES = 2;
+const PIT_MAX_LOCAL_CONCURRENT_PAGE_BATCHES = 1;
 const PIT_FIRST_BATCH_LEAD_MS = 120;
 // Dynamic pages often reveal a few text nodes over several mutation callbacks.
 // Let those background-only updates settle into one turn, but never hold them
@@ -210,7 +212,7 @@ async function translateBlocks(
     firstBatchLeadMs = PIT_FIRST_BATCH_LEAD_MS
   } = {}
 ) {
-  const maxBatchItems = clamp(Number(options.batchSize || PIT_MAX_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
+  const maxBatchItems = clamp(Number(options.batchSize || PIT_DEFAULT_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
   const maxBatchChars = clamp(Number(options.batchCharLimit || PIT_DEFAULT_BATCH_CHAR_LIMIT), PIT_MIN_BATCH_CHAR_LIMIT, PIT_MAX_BATCH_CHAR_LIMIT);
   const mode = options.mode || "bilingual";
   const bilingualStyle = normalizeBilingualStyle(options.bilingualStyle);
@@ -280,6 +282,8 @@ async function translateBlocks(
         targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
         priority: normalizeTranslationPriority(priority),
+        profile: "natural",
+        contentKind: "webpage",
         sourceUrl,
         requestId
       });
@@ -371,12 +375,20 @@ async function translateBlocks(
       && translationEpoch === PIT_STATE.translationEpoch
     )
       ? Math.min(
-        Math.max(0, PIT_MAX_CONCURRENT_PAGE_BATCHES - activeFirstBatchCount),
+        Math.max(0, maximumConcurrentPageBatches() - activeFirstBatchCount),
         batches.length - nextBatchIndex
       )
       : 0;
     const workers = Array.from({ length: workerCount }, () => worker(remainingBatchPriority));
     await Promise.all([firstWorker, ...workers]);
+    if (
+      nextBatchIndex < batches.length
+      && !firstError
+      && !PIT_STATE.cancelRequested
+      && translationEpoch === PIT_STATE.translationEpoch
+    ) {
+      await worker(remainingBatchPriority);
+    }
   }
 
   if (firstError) {
@@ -519,7 +531,7 @@ function removePendingTranslationJob(job) {
 function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE_MS, resetTimer = true) {
   if (
     PIT_STATE.pendingQueue.size === 0 ||
-    PIT_STATE.pendingDraining >= PIT_MAX_CONCURRENT_PAGE_BATCHES
+    PIT_STATE.pendingDraining >= maximumConcurrentPageBatches()
   ) {
     return;
   }
@@ -575,7 +587,7 @@ function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE
 }
 
 async function acquireBatchRequestSlot() {
-  if (PIT_STATE.activeBatchRequests < PIT_MAX_CONCURRENT_PAGE_BATCHES) {
+  if (PIT_STATE.activeBatchRequests < maximumConcurrentPageBatches()) {
     PIT_STATE.activeBatchRequests += 1;
     return;
   }
@@ -586,12 +598,20 @@ async function acquireBatchRequestSlot() {
 }
 
 function releaseBatchRequestSlot() {
-  const next = PIT_STATE.batchRequestWaiters.shift();
-  if (next) {
-    next();
-    return;
-  }
   PIT_STATE.activeBatchRequests = Math.max(0, PIT_STATE.activeBatchRequests - 1);
+  while (
+    PIT_STATE.batchRequestWaiters.length > 0
+    && PIT_STATE.activeBatchRequests < maximumConcurrentPageBatches()
+  ) {
+    PIT_STATE.activeBatchRequests += 1;
+    PIT_STATE.batchRequestWaiters.shift()();
+  }
+}
+
+function maximumConcurrentPageBatches() {
+  return String(PIT_STATE.provider || "").toLowerCase() === "llama"
+    ? PIT_MAX_LOCAL_CONCURRENT_PAGE_BATCHES
+    : PIT_MAX_REMOTE_CONCURRENT_PAGE_BATCHES;
 }
 
 function clearPendingTranslationQueue() {

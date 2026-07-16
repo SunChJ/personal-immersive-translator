@@ -17,6 +17,9 @@ The Gloss extension adds page, selection, bilingual, and replace-mode translatio
 - Insert translations block-by-block instead of mixing text inline.
 - Match translations back to DOM blocks using stable `pitId` anchors.
 - Use a fast first batch and character-budgeted follow-up batches for responsive long-page translation.
+- Tune the request item and character budgets without bypassing the provider-aware concurrency guard.
+- Translate YouTube subtitles in Chrome with a separate playback-aware queue and bilingual overlay.
+- Read selection translations aloud with local system voices, adjustable speed, and one active playback at a time.
 - Translate identical full text once and fan the result back out to every DOM position.
 - Keep replace mode reversible without destroying original links or inline nodes.
 - Keep a local translation cache for repeated text.
@@ -95,6 +98,18 @@ The extension injects a small floating translate button on normal web pages.
 The popup includes common targets such as Chinese, English, Japanese, Korean, French, German, Spanish, Portuguese, Italian, Russian, Arabic, Hindi, Vietnamese, Thai, and Indonesian. Choose `Custom...` to enter any other target language or locale, for example `Dutch` or `Brazilian Portuguese`.
 
 Gloss owns the backend and model lifecycle. The browser extension only stores page-display preferences, the loopback endpoint, and its per-install pairing token.
+
+Open the popup's overflow menu to tune `Batch items`, `Batch characters`, and `Speech speed`. The defaults remain 8 items, 800 characters, and 1× speech.
+
+## YouTube Subtitles
+
+Chrome exposes a `译` button in the YouTube player when the video has uploaded or automatic captions. Enable it there or turn on `YouTube subtitles` in the popup. Gloss translates an initial 50-second window, prefetches the next 60 seconds as playback approaches the boundary, and starts a new relevant window after seeking. Subtitle work uses its own queue and the subtitle translation profile.
+
+The first release supports Chrome YouTube pages. Safari does not expose the page-player caption metadata through the same main-world bridge yet, so its subtitle control stays unavailable rather than falling back to fragile DOM scraping.
+
+## Text-to-Speech
+
+Translate a text selection and choose the play icon in the result card. Speech stays on-device through the browser's system speech engine. Starting another selection stops the prior playback; press the stop icon to end it manually. Long results are split at sentence boundaries to avoid browser speech limits.
 
 ## Legacy Node Service
 

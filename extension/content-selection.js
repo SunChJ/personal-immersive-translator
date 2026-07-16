@@ -1,5 +1,6 @@
 // Selection-translation tooltip: init, render, copy, speech playback.
 function initSelectionTranslation() {
+  if (disableStaleGlossContext()) return;
   chrome.storage.local.get({ translateSelection: true }, (settings) => {
     PIT_STATE.selectionTranslationEnabled = settings.translateSelection !== false;
   });
@@ -19,7 +20,11 @@ function initSelectionTranslation() {
 }
 
 function scheduleSelectionTranslation(event) {
-  if (!PIT_STATE.selectionTranslationEnabled || event.target?.closest?.("#pit-floating, #pit-selection-tooltip")) {
+  if (
+    disableStaleGlossContext()
+    || !PIT_STATE.selectionTranslationEnabled
+    || event.target?.closest?.("#pit-floating, #pit-selection-tooltip")
+  ) {
     return;
   }
 
@@ -77,6 +82,8 @@ async function translateCurrentSelection() {
       targetLanguage: settings.targetLanguage,
       endpoint: settings.endpoint,
       priority: "interactive",
+      profile: "natural",
+      contentKind: "selection",
       sourceUrl: location.href,
       requestId: bridgeRequestId
     });
@@ -101,7 +108,7 @@ async function translateCurrentSelection() {
     throw new Error("Selection translation returned empty text.");
   }
 
-  renderSelectionTooltipResult(rect, translation, settings.targetLanguage);
+  renderSelectionTooltipResult(rect, translation, settings.targetLanguage, settings.ttsRate);
 }
 
 function selectionIntersectsSkippedUi(range) {
@@ -140,7 +147,7 @@ function renderSelectionTooltipPending(rect) {
   `;
 }
 
-function renderSelectionTooltipResult(rect, translation, targetLanguage) {
+function renderSelectionTooltipResult(rect, translation, targetLanguage, ttsRate = PIT_DEFAULT_TTS_RATE) {
   const root = ensureSelectionTooltip(rect);
   root.innerHTML = `
     <div class="pit-selection-body">
@@ -173,9 +180,8 @@ function renderSelectionTooltipResult(rect, translation, targetLanguage) {
     await navigator.clipboard.writeText(translation);
     flashSelectionIcon(root.querySelector("[data-action='copy']"));
   });
-  root.querySelector("[data-action='speak']").addEventListener("click", () => {
-    speakSelectionTranslation(translation, targetLanguage);
-    flashSelectionIcon(root.querySelector("[data-action='speak']"));
+  root.querySelector("[data-action='speak']").addEventListener("click", (event) => {
+    speakSelectionTranslation(translation, targetLanguage, ttsRate, event.currentTarget);
   });
 }
 
@@ -237,15 +243,106 @@ function positionSelectionTooltip(root, rect) {
   root.style.top = `${clamp(top, 12, window.innerHeight - 180)}px`;
 }
 
-function speakSelectionTranslation(text, targetLanguage) {
+function speakSelectionTranslation(text, targetLanguage, rate = PIT_DEFAULT_TTS_RATE, button = null) {
   if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
     return;
   }
 
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = speechLanguageForTarget(targetLanguage);
-  window.speechSynthesis.speak(utterance);
+  if (button && PIT_STATE.speechButton === button && button.dataset.playing === "true") {
+    stopSelectionSpeech();
+    return;
+  }
+
+  stopSelectionSpeech();
+  const playbackId = PIT_STATE.speechPlaybackId;
+  const language = speechLanguageForTarget(targetLanguage);
+  const voice = bestSpeechVoice(language);
+  const chunks = splitSpeechText(text);
+  PIT_STATE.speechButton = button;
+  setSelectionSpeechButton(button, true);
+
+  const playNext = (index) => {
+    if (playbackId !== PIT_STATE.speechPlaybackId || index >= chunks.length) {
+      if (playbackId === PIT_STATE.speechPlaybackId) {
+        finishSelectionSpeech(button);
+      }
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(chunks[index]);
+    utterance.lang = language;
+    utterance.rate = normalizeTtsRate(rate);
+    if (voice) {
+      utterance.voice = voice;
+    }
+    utterance.onend = () => playNext(index + 1);
+    utterance.onerror = () => finishSelectionSpeech(button);
+    window.speechSynthesis.speak(utterance);
+  };
+  playNext(0);
+}
+
+function stopSelectionSpeech() {
+  PIT_STATE.speechPlaybackId += 1;
+  window.speechSynthesis?.cancel();
+  setSelectionSpeechButton(PIT_STATE.speechButton, false);
+  PIT_STATE.speechButton = null;
+}
+
+function finishSelectionSpeech(button) {
+  setSelectionSpeechButton(button, false);
+  if (PIT_STATE.speechButton === button) {
+    PIT_STATE.speechButton = null;
+  }
+}
+
+function setSelectionSpeechButton(button, playing) {
+  if (!button?.isConnected) {
+    return;
+  }
+  button.dataset.playing = String(playing);
+  button.title = playing ? "Stop" : "Play";
+  button.setAttribute("aria-label", playing ? "Stop reading translation" : "Play translation");
+  button.innerHTML = playing
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5 L19 12 L7 19 Z" fill="currentColor"/></svg>';
+}
+
+function splitSpeechText(text, maxChars = 220) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return [];
+  }
+  const sentences = normalized.match(/[^.!?。！？；;]+[.!?。！？；;]?/g) || [normalized];
+  const chunks = [];
+  let current = "";
+  sentences.forEach((sentence) => {
+    const part = sentence.trim();
+    if (!part) return;
+    if (current && current.length + 1 + part.length <= maxChars) {
+      current += ` ${part}`;
+      return;
+    }
+    if (current) chunks.push(current);
+    if (part.length <= maxChars) {
+      current = part;
+      return;
+    }
+    for (let offset = 0; offset < part.length; offset += maxChars) {
+      chunks.push(part.slice(offset, offset + maxChars));
+    }
+    current = "";
+  });
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function bestSpeechVoice(language) {
+  const voices = window.speechSynthesis?.getVoices?.() || [];
+  const normalized = String(language || "").toLowerCase();
+  const base = normalized.split("-")[0];
+  return voices.find((voice) => voice.lang.toLowerCase() === normalized)
+    || voices.find((voice) => voice.lang.toLowerCase().startsWith(`${base}-`))
+    || null;
 }
 
 function speechLanguageForTarget(targetLanguage) {
@@ -267,6 +364,33 @@ function speechLanguageForTarget(targetLanguage) {
   }
   if (normalized.includes("spanish")) {
     return "es-ES";
+  }
+  if (normalized.includes("portuguese")) {
+    return "pt-BR";
+  }
+  if (normalized.includes("italian")) {
+    return "it-IT";
+  }
+  if (normalized.includes("russian")) {
+    return "ru-RU";
+  }
+  if (normalized.includes("arabic")) {
+    return "ar-SA";
+  }
+  if (normalized.includes("hindi")) {
+    return "hi-IN";
+  }
+  if (normalized.includes("vietnamese")) {
+    return "vi-VN";
+  }
+  if (normalized.includes("thai")) {
+    return "th-TH";
+  }
+  if (normalized.includes("indonesian")) {
+    return "id-ID";
+  }
+  if (normalized.includes("english")) {
+    return "en-US";
   }
   return "";
 }

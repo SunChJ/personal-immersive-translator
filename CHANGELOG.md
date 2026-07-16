@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.3 - 2026-07-15
+
+- Restored YouTube subtitle translation with POT-aware timed-text discovery, same-page session fetching, and a credentialed background fallback.
+- Kept captured POT URLs across player refreshes and retried subtitle requests after enabling native captions.
+- Embedded each translation as a new line inside YouTube's native caption window so it follows caption positioning and fullscreen changes.
+- Reduced the translated caption size and widened its available line width to keep bilingual playback compact and readable.
+- Added a progress-aware subtitle buffer: nearby cues use a visible-priority lane, the next 45 seconds preheat in the background, and seeking cancels stale work before refilling around the new position.
+- Made content controls shut down cleanly when Chrome invalidates an old extension context after reload, avoiding frozen controls and `chrome.storage` promise errors until the page is refreshed.
+- Updated Gloss-managed browser extension files in place so Chrome does not lose the unpacked extension during upgrades.
+
+## 0.5.1 - 2026-07-15
+
+- Synchronized the Gloss app, Chrome extension, and Safari extension release version.
+- Added the product version beside Gloss in the macOS menu-bar panel header.
+
+## 0.5.0 - 2026-07-15
+
+- Added Chrome YouTube subtitle translation with a separate time-window queue, playback-aware prefetching, streamed results, and a bilingual Shadow DOM overlay.
+- Upgraded selection text-to-speech with system voice matching, configurable speed, long-text chunking, and single-playback stop controls.
+- Exposed request item and character budgets while preserving the fast-first batch and provider-aware concurrency limits.
+- Forwarded translation profile and content kind through the browser bridge so subtitle, selection, and webpage requests keep distinct prompts and cache contexts.
+
 ## 0.4.1 - 2026-07-15
 
 - Replaced per-site auto-translation with one global setting that automatically translates every supported website after it loads.

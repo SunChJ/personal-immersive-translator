@@ -16,6 +16,11 @@ test("WXT emits distinct Chrome and Safari MV3 manifests", () => {
   assert.equal(safari.manifest.content_scripts.some((script) => "world" in script), false);
   assert.equal(chrome.manifest.permissions.includes("nativeMessaging"), false);
   assert.equal(safari.manifest.permissions.includes("nativeMessaging"), true);
+  assert.equal(chrome.manifest.host_permissions.includes("https://www.youtube.com/api/timedtext*"), true);
+  assert.equal(
+    chrome.manifest.content_scripts.some((script) => script.js.includes("content-subtitles.js")),
+    true
+  );
   assert.match(chrome.configuration, /GLOSS_BROWSER_TARGET=`chrome`/);
   assert.match(safari.configuration, /GLOSS_BROWSER_TARGET=`safari`/);
 
