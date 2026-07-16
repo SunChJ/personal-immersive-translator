@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - 2026-07-15
+
+- Added Chrome YouTube subtitle translation with a separate time-window queue, playback-aware prefetching, streamed results, and a bilingual Shadow DOM overlay.
+- Upgraded selection text-to-speech with system voice matching, configurable speed, long-text chunking, and single-playback stop controls.
+- Exposed request item and character budgets while preserving the fast-first batch and provider-aware concurrency limits.
+- Forwarded translation profile and content kind through the browser bridge so subtitle, selection, and webpage requests keep distinct prompts and cache contexts.
+
 ## 0.4.1 - 2026-07-15
 
 - Replaced per-site auto-translation with one global setting that automatically translates every supported website after it loads.

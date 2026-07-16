@@ -491,12 +491,17 @@ function readTranslationSettings() {
     clearPrevious: true,
     viewportFirst: true,
     translateSelection: true,
-    autoTranslateAllPages: false
+    autoTranslateAllPages: false,
+    batchSize: PIT_DEFAULT_BATCH_ITEMS,
+    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
+    ttsRate: PIT_DEFAULT_TTS_RATE,
+    translateSubtitles: false
   }).then((settings) => ({
     ...settings,
     targetLanguage: normalizeTargetLanguage(settings.targetLanguage),
-    batchSize: PIT_MAX_BATCH_ITEMS,
-    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
+    batchSize: normalizeBatchItems(settings.batchSize),
+    batchCharLimit: normalizeBatchCharLimit(settings.batchCharLimit),
+    ttsRate: normalizeTtsRate(settings.ttsRate),
     minChars: 4
   }));
 }

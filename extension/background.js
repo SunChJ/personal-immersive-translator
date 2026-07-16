@@ -3,6 +3,8 @@ importScripts("gloss-config.js", "shared.js");
 const TRANSLATE_TIMEOUT_MS = 135000;
 const STREAM_RETRY_BATCH_ITEMS = 4;
 const AUTO_TRANSLATE_DELAY_MS = 700;
+const YOUTUBE_SUBTITLE_TIMEOUT_MS = 15000;
+const YOUTUBE_SUBTITLE_MAX_BYTES = 5 * 1024 * 1024;
 
 const autoTranslateTimers = new Map();
 const autoTranslateJobs = new Map();
@@ -10,7 +12,7 @@ const autoTranslateGenerations = new Map();
 const activeTranslationRequests = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !["translate-batch", "cancel-translation", "check-health"].includes(message.type)) {
+  if (!message || !["translate-batch", "cancel-translation", "check-health", "fetch-youtube-subtitles"].includes(message.type)) {
     return false;
   }
 
@@ -18,7 +20,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     ? translateBatch(message, sender)
     : message.type === "cancel-translation"
       ? cancelTranslation(message)
-      : checkHealth(message);
+      : message.type === "fetch-youtube-subtitles"
+        ? fetchYouTubeSubtitles(message, sender)
+        : checkHealth(message);
   task
     .then((payload) => sendResponse({ ok: true, ...payload }))
     .catch((error) => {
@@ -87,6 +91,8 @@ async function translateBatch(message, sender = {}) {
         items,
         targetLanguage: message.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         priority: normalizeTranslationPriority(message.priority),
+        profile: message.profile || "natural",
+        contentKind: message.contentKind || "webpage",
         sourceUrl: message.sourceUrl || "",
         requestId: bridgeRequestId
       }),
@@ -218,6 +224,55 @@ async function cancelTranslation(message) {
     return { cancelled, forwarded: response.ok };
   } catch {
     return { cancelled, forwarded: false };
+  }
+}
+
+async function fetchYouTubeSubtitles(message, sender = {}) {
+  if (!isYouTubePageUrl(sender.url || sender.tab?.url || "")) {
+    throw new Error("YouTube subtitles can only be requested from a YouTube page.");
+  }
+  const url = normalizeYouTubeSubtitleUrl(message.url);
+  const response = await fetchWithTimeout(url, {
+    credentials: "omit",
+    headers: { Accept: "application/json" }
+  }, YOUTUBE_SUBTITLE_TIMEOUT_MS);
+  if (!response.ok) {
+    throw new Error(`YouTube subtitle request failed with HTTP ${response.status}.`);
+  }
+  const text = await response.text();
+  if (text.length > YOUTUBE_SUBTITLE_MAX_BYTES) {
+    throw new Error("YouTube subtitle response is too large.");
+  }
+  let subtitles;
+  try {
+    subtitles = JSON.parse(text);
+  } catch {
+    throw new Error("YouTube returned an invalid subtitle response.");
+  }
+  return { subtitles };
+}
+
+function normalizeYouTubeSubtitleUrl(value) {
+  let url;
+  try {
+    url = new URL(String(value || ""));
+  } catch {
+    throw new Error("Invalid YouTube subtitle URL.");
+  }
+  const allowedHosts = new Set(["www.youtube.com", "youtube.com", "www.youtube-nocookie.com"]);
+  if (url.protocol !== "https:" || !allowedHosts.has(url.hostname.toLowerCase()) || url.pathname !== "/api/timedtext") {
+    throw new Error("Unsupported YouTube subtitle URL.");
+  }
+  url.searchParams.set("fmt", "json3");
+  return url.toString();
+}
+
+function isYouTubePageUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && ["www.youtube.com", "youtube.com", "www.youtube-nocookie.com"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
   }
 }
 
@@ -357,8 +412,8 @@ async function sendAutoTranslateMessage(tabId, url, settings, job) {
     showFloatingButton: settings.showFloatingButton !== false,
     translateSelection: settings.translateSelection !== false,
     autoTranslate: true,
-    batchSize: PIT_MAX_BATCH_ITEMS,
-    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT,
+    batchSize: normalizeBatchItems(settings.batchSize),
+    batchCharLimit: normalizeBatchCharLimit(settings.batchCharLimit),
     minChars: 4
   };
 
@@ -430,7 +485,9 @@ function defaultTranslationSettings() {
     viewportFirst: true,
     showFloatingButton: true,
     translateSelection: true,
-    autoTranslateAllPages: false
+    autoTranslateAllPages: false,
+    batchSize: PIT_DEFAULT_BATCH_ITEMS,
+    batchCharLimit: PIT_DEFAULT_BATCH_CHAR_LIMIT
   };
 }
 

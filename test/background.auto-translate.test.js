@@ -84,6 +84,8 @@ test("cancelling a translation aborts the active fetch and forwards the request 
     endpoint: AUTO_TRANSLATE_SETTINGS.endpoint,
     targetLanguage: AUTO_TRANSLATE_SETTINGS.targetLanguage,
     priority: "background",
+    profile: "subtitle",
+    contentKind: "subtitle",
     items: [{ id: "one", text: "Long local translation" }]
   });
   await flushTasks();
@@ -101,6 +103,24 @@ test("cancelling a translation aborts the active fetch and forwards the request 
   assert.equal(translation.ok, false);
   assert.match(translation.error, /cancelled/i);
   assert.deepEqual(runtime.forwardedCancels, [["browser-request-1"]]);
+  assert.equal(runtime.translationBodies[0].profile, "subtitle");
+  assert.equal(runtime.translationBodies[0].contentKind, "subtitle");
+});
+
+test("subtitle fetches are restricted to YouTube timed-text URLs", () => {
+  const runtime = createBackgroundRuntime();
+  assert.match(
+    runtime.normalizeYouTubeSubtitleUrl("https://www.youtube.com/api/timedtext?v=video&lang=en"),
+    /fmt=json3/
+  );
+  assert.throws(
+    () => runtime.normalizeYouTubeSubtitleUrl("https://www.youtube.com/watch?v=video"),
+    /unsupported/i
+  );
+  assert.throws(
+    () => runtime.normalizeYouTubeSubtitleUrl("https://youtube.example/api/timedtext?v=video"),
+    /unsupported/i
+  );
 });
 
 function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
@@ -109,6 +129,7 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
   const sentMessages = [];
   const pendingSends = [];
   const forwardedCancels = [];
+  const translationBodies = [];
   let nextTimerId = 1;
 
   const context = vm.createContext({
@@ -128,6 +149,9 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
       return id;
     },
     fetch(_url, options) {
+      if (String(_url).includes("/translate/stream")) {
+        translationBodies.push(JSON.parse(options.body));
+      }
       return new Promise((_resolve, reject) => {
         options.signal.addEventListener("abort", () => {
           reject(new DOMException("Aborted", "AbortError"));
@@ -168,6 +192,12 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
     normalizeTranslationPriority(value) {
       return value;
     },
+    normalizeBatchItems(value) {
+      return Number(value) || 8;
+    },
+    normalizeBatchCharLimit(value) {
+      return Number(value) || 800;
+    },
     fetchWithTimeout: async (_url, options) => {
       forwardedCancels.push(JSON.parse(options.body).requestIds);
       return { ok: true };
@@ -176,6 +206,7 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
       return new URL(value).hostname;
     },
     PIT_DEFAULT_BATCH_CHAR_LIMIT: 10000,
+    PIT_DEFAULT_BATCH_ITEMS: 8,
     PIT_DEFAULT_BILINGUAL_STYLE: "dashed",
     PIT_DEFAULT_ENDPOINT: "http://127.0.0.1:8787",
     PIT_DEFAULT_PAIRING_TOKEN: "test-token",
@@ -198,7 +229,9 @@ function createBackgroundRuntime(settings = AUTO_TRANSLATE_SETTINGS) {
 
   return {
     forwardedCancels,
+    translationBodies,
     sentMessages,
+    normalizeYouTubeSubtitleUrl: context.normalizeYouTubeSubtitleUrl,
     message(message) {
       return new Promise((resolve) => {
         const handled = listeners.runtimeMessage(message, { tab: { id: 1 } }, resolve);

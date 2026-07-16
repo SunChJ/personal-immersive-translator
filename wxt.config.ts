@@ -12,6 +12,7 @@ const isolatedContentScripts = [
   "content-selection.js",
   "content-styles.js",
   "content-translate.js",
+  "content-subtitles.js",
   "content.js"
 ];
 
@@ -46,7 +47,12 @@ export default defineConfig({
       ],
       host_permissions: [
         "http://127.0.0.1/*",
-        "http://localhost/*"
+        "http://localhost/*",
+        ...(!isSafari ? [
+          "https://www.youtube.com/api/timedtext*",
+          "https://youtube.com/api/timedtext*",
+          "https://www.youtube-nocookie.com/api/timedtext*"
+        ] : [])
       ],
       permissions: [
         "activeTab",

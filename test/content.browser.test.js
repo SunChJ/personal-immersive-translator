@@ -19,6 +19,20 @@ installBrowserCleanupHandlers();
 test("adaptive batching uses a 6-item first batch and 8-item tail batches", async () => {
   const result = await getBrowserSuiteResult("adaptive-batches");
   assert.deepEqual(result.batchSizes, [6, 8, 8, 8, 8, 7]);
+  assert.deepEqual(result.contentKinds, ["webpage"]);
+  assert.deepEqual(result.profiles, ["natural"]);
+});
+
+test("media helpers normalize batch settings, speech chunks, and YouTube cues", async () => {
+  const result = await getBrowserSuiteResult("media-helpers");
+  assert.deepEqual(result.batch, { items: 3, characters: 350 });
+  assert.equal(result.speechLanguage, "zh-TW");
+  assert.ok(result.speechChunks.length >= 2);
+  assert.deepEqual(result.cue, {
+    count: 2,
+    current: "Second caption",
+    firstEndMs: 2200
+  });
 });
 
 test("long-page tail reserves one native turn for foreground work", async () => {
@@ -473,6 +487,13 @@ function createHarnessHtml(routeSources, contentSources) {
 <body>
   ${scriptTags(routeSources)}
   <script>
+    window.__pitErrors = [];
+    window.addEventListener("error", (event) => {
+      window.__pitErrors.push(event.error?.stack || event.message || "Unknown page error");
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      window.__pitErrors.push(event.reason?.stack || String(event.reason));
+    });
     window.__pitCalls = [];
     window.__pitCancelledRequests = [];
     window.__pitDefaultSend = async (message) => ({
@@ -536,7 +557,7 @@ function createHarnessHtml(routeSources, contentSources) {
   ${scriptTags(contentSources)}
   <script>
     const TEST_OPTIONS = {
-      batchSize: 40,
+      batchSize: 8,
       bilingualStyle: "dashed",
       clearPrevious: false,
       endpoint: "http://127.0.0.1:8787",
@@ -585,7 +606,33 @@ function createHarnessHtml(routeSources, contentSources) {
         ).join("");
         setBody("<main>" + paragraphs + "</main>");
         await translatePage(TEST_OPTIONS);
-        return { batchSizes: translationCalls().map((call) => call.items.length) };
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          contentKinds: Array.from(new Set(translationCalls().map((call) => call.contentKind))),
+          profiles: Array.from(new Set(translationCalls().map((call) => call.profile)))
+        };
+      }
+
+      if (name === "media-helpers") {
+        window.__pitStorage.batchSize = 3;
+        window.__pitStorage.batchCharLimit = 350;
+        const settings = await readTranslationSettings();
+        const cues = parseYouTubeSubtitleEvents({
+          events: [
+            { tStartMs: 1000, dDurationMs: 1200, segs: [{ utf8: "First\\ncaption" }] },
+            { tStartMs: 2300, dDurationMs: 1800, segs: [{ utf8: "Second caption" }] }
+          ]
+        });
+        return {
+          batch: { items: settings.batchSize, characters: settings.batchCharLimit },
+          speechLanguage: speechLanguageForTarget("Chinese (Traditional)"),
+          speechChunks: splitSpeechText("One short sentence. " + "x".repeat(260)),
+          cue: {
+            count: cues.length,
+            current: findSubtitleCue(cues, 2500)?.text || "",
+            firstEndMs: cues[0].endMs
+          }
+        };
       }
 
       if (name === "character-budget") {
@@ -1280,9 +1327,13 @@ function createHarnessHtml(routeSources, contentSources) {
     }
 
     async function runSuite() {
+      if (window.__pitErrors.length > 0) {
+        throw new Error("Browser boot failed: " + window.__pitErrors.join("\\n"));
+      }
       const results = {};
       for (const name of [
         "adaptive-batches",
+        "media-helpers",
         "character-budget",
         "newest-pending-first",
         "pending-batch-order",

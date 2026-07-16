@@ -212,7 +212,7 @@ async function translateBlocks(
     firstBatchLeadMs = PIT_FIRST_BATCH_LEAD_MS
   } = {}
 ) {
-  const maxBatchItems = clamp(Number(options.batchSize || PIT_MAX_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
+  const maxBatchItems = clamp(Number(options.batchSize || PIT_DEFAULT_BATCH_ITEMS), 1, PIT_MAX_BATCH_ITEMS);
   const maxBatchChars = clamp(Number(options.batchCharLimit || PIT_DEFAULT_BATCH_CHAR_LIMIT), PIT_MIN_BATCH_CHAR_LIMIT, PIT_MAX_BATCH_CHAR_LIMIT);
   const mode = options.mode || "bilingual";
   const bilingualStyle = normalizeBilingualStyle(options.bilingualStyle);
@@ -282,6 +282,8 @@ async function translateBlocks(
         targetLanguage: options.targetLanguage || PIT_DEFAULT_TARGET_LANGUAGE,
         endpoint: options.endpoint || PIT_DEFAULT_ENDPOINT,
         priority: normalizeTranslationPriority(priority),
+        profile: "natural",
+        contentKind: "webpage",
         sourceUrl,
         requestId
       });

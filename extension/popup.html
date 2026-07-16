@@ -85,6 +85,11 @@
           <span class="switch-track" aria-hidden="true"></span>
         </label>
         <label class="switch-row">
+          <span>YouTube subtitles</span>
+          <input id="translateSubtitles" type="checkbox">
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
+        <label class="switch-row">
           <span>Floating button</span>
           <input id="showFloatingButton" type="checkbox" checked>
           <span class="switch-track" aria-hidden="true"></span>
@@ -153,6 +158,26 @@
           <input id="pairingToken" type="password" placeholder="Copy from Gloss Settings" autocomplete="off" spellcheck="false">
         </label>
         <p class="pairing-hint">The App-managed extension pairs automatically. Source builds can use a copied token.</p>
+        <div class="overflow-grid">
+          <label class="stacked-field">
+            <span>Batch items</span>
+            <input id="batchSize" type="number" min="1" max="40" step="1" inputmode="numeric">
+          </label>
+          <label class="stacked-field">
+            <span>Batch characters</span>
+            <input id="batchCharLimit" type="number" min="200" max="4000" step="100" inputmode="numeric">
+          </label>
+        </div>
+        <label class="stacked-field tts-field">
+          <span>Speech speed</span>
+          <select id="ttsRate">
+            <option value="0.75">0.75×</option>
+            <option value="1">1×</option>
+            <option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+        </label>
         <div class="overflow-meta"><span>Latency</span><span id="latency" class="meta">--</span></div>
         <label class="checkbox">
           <input id="clearPrevious" type="checkbox" checked>

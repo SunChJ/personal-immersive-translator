@@ -21,8 +21,10 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["韩文", "Korean"],
   ["韩语", "Korean"]
 ]);
-const PIT_MAX_BATCH_ITEMS = 8;
+const PIT_DEFAULT_BATCH_ITEMS = 8;
+const PIT_MAX_BATCH_ITEMS = 40;
 const PIT_DEFAULT_BATCH_CHAR_LIMIT = 800;
+const PIT_DEFAULT_TTS_RATE = 1;
 const PIT_HEALTH_TIMEOUT_MS = 5000;
 const PIT_TARGET_LANGUAGE_PATTERN = /^[\p{L}\p{M}\p{N} _(),.'’-]{1,100}$/u;
 
@@ -41,6 +43,21 @@ function normalizeBilingualStyle(value) {
 
 function normalizeTranslationPriority(value, fallback = "visible") {
   return PIT_TRANSLATION_PRIORITIES.has(value) ? value : fallback;
+}
+
+function normalizeBatchItems(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.min(PIT_MAX_BATCH_ITEMS, Math.max(1, parsed)) : PIT_DEFAULT_BATCH_ITEMS;
+}
+
+function normalizeBatchCharLimit(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.min(4000, Math.max(200, parsed)) : PIT_DEFAULT_BATCH_CHAR_LIMIT;
+}
+
+function normalizeTtsRate(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(2, Math.max(0.5, parsed)) : PIT_DEFAULT_TTS_RATE;
 }
 
 function normalizeEndpoint(endpoint) {
