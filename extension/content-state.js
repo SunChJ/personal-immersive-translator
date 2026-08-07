@@ -168,6 +168,7 @@ const PIT_SKIP_TAGS = new Set([
   "option",
   "picture",
   "pre",
+  "samp",
   "script",
   "select",
   "source",
@@ -177,14 +178,8 @@ const PIT_SKIP_TAGS = new Set([
   "textarea",
   "time",
   "track",
+  "var",
   "video"
-]);
-
-const PIT_PRESERVE_INLINE_TEXT_TAGS = new Set([
-  "code",
-  "kbd",
-  "samp",
-  "var"
 ]);
 
 const PIT_BLOCK_DISPLAYS = new Set([
