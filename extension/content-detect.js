@@ -398,6 +398,9 @@ function shouldSkipElement(element, options = {}) {
     "[translate='no']",
     ".notranslate",
     ".pit-translation",
+    ".katex",
+    ".MathJax",
+    "mjx-container",
     "#pit-floating"
   ];
 
@@ -555,12 +558,6 @@ function extractInlineReadableText(node, rootElement, measurements, skipOptions)
     return "";
   }
 
-  if (node !== rootElement && PIT_PRESERVE_INLINE_TEXT_TAGS.has(node.tagName.toLowerCase())) {
-    return isVisible(node, measurements) && !isAssistiveOnlyElement(node, measurements)
-      ? node.textContent || ""
-      : "";
-  }
-
   if (node !== rootElement && shouldSkipElement(node, skipOptions)) {
     return "";
   }
@@ -617,12 +614,6 @@ function extractReadableTextFromNode(node, rootElement, measurements, skipOption
 
   if (node.nodeType !== Node.ELEMENT_NODE || !(node instanceof HTMLElement)) {
     return "";
-  }
-
-  if (node !== rootElement && PIT_PRESERVE_INLINE_TEXT_TAGS.has(node.tagName.toLowerCase())) {
-    return isVisible(node, measurements) && !isAssistiveOnlyElement(node, measurements)
-      ? node.textContent || ""
-      : "";
   }
 
   if (
