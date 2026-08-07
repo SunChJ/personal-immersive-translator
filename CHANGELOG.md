@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.5 - 2026-08-07
 
 - Added Safari YouTube subtitle parity through Safari's native Main World content-script support, including caption-track discovery, POT-aware timed-text fetching, the player control, and the popup setting.
 - Added YouTube timed-text permissions to Safari and kept the shared Chrome/Safari subtitle runtime as the single implementation.
+- Stopped feeding code content into the translation pipeline: inline `code`, `kbd`, `samp`, and `var` text is now skipped during extraction (they were previously preserved into the source text sent to the translator), joining block-level `pre`/`code` blocks that were already excluded.
+- Added KaTeX (`katex`), MathJax (`.MathJax`, `mjx-container`), and MathML (`math`) formula containers to the skip set so formula markup never reaches the translator.
 
 ## 0.5.4 - 2026-07-16
 
