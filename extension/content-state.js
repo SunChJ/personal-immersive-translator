@@ -238,7 +238,19 @@ const PIT_SITE_RULES = [
       ".comment-body p",
       ".comment-body li"
     ],
-    skipSelectors: ["pre", "code", ".blob-wrapper", ".highlight"]
+    skipSelectors: [
+      "pre",
+      "code",
+      ".blob-wrapper",
+      ".highlight",
+      "#folders-and-files",
+      "[aria-labelledby='folders-and-files']",
+      ".react-directory-row",
+      ".js-navigation-item",
+      "table.files",
+      "[data-testid='file-tree-view']",
+      "[data-testid='tree-view-container']"
+    ]
   },
   {
     host: /(^|\.)reddit\.com$/i,

@@ -151,6 +151,17 @@ test("Hacker News title rows are not mistaken for navigation", async () => {
   assert.equal(result.untranslatedTitles, 0);
 });
 
+test("GitHub repository pages translate README content but skip the file list", async () => {
+  const result = await getBrowserSuiteResult("github-readme-only");
+  assert.deepEqual(result.requestTexts, [
+    "Gloss project overview",
+    "This README paragraph should be translated for repository visitors."
+  ]);
+  assert.equal(result.readmeSlots, 2);
+  assert.equal(result.fileListSlots, 0);
+  assert.equal(result.fileListCollected, 0);
+});
+
 test("a partial batch failure keeps successful items rendered", async () => {
   const result = await getBrowserSuiteResult("partial-batch-failure");
   assert.equal(result.readySlots, 1);
@@ -174,7 +185,7 @@ test("nested list sections enter the lazy queue as one complete group", async ()
   assert.equal(result.parentBeforeNestedList, true);
   assert.equal(result.nestedReady, 18);
   assert.equal(result.nestedDeferred, 0);
-  assert.equal(result.parentSource, "Set reasoning.effort intentionally for this workload.");
+  assert.equal(result.parentSource, "Set intentionally for this workload.");
 });
 
 test("bilingual translations keep their source font size", async () => {
@@ -1325,6 +1336,31 @@ function createHarnessHtml(routeSources, contentSources) {
         }
       }
 
+      if (name === "github-readme-only") {
+        const githubRule = PIT_SITE_RULES.find((rule) => rule.host.test("github.com"));
+        PIT_SITE_RULES.unshift({ ...githubRule, host: /^127\.0\.0\.1$/ });
+        try {
+          setBody(
+            '<main><h2 id="folders-and-files">Folders and files</h2>' +
+            '<table aria-labelledby="folders-and-files"><tbody>' +
+            '<tr class="react-directory-row"><td>Sources</td><td>Improve translation behavior for repository pages.</td></tr>' +
+            '<tr class="react-directory-row"><td>README.md</td><td>Document the latest project features.</td></tr>' +
+            '</tbody></table>' +
+            '<article id="readme" class="markdown-body"><h1>Gloss project overview</h1>' +
+            '<p>This README paragraph should be translated for repository visitors.</p></article></main>'
+          );
+          await translatePage(TEST_OPTIONS);
+          return {
+            requestTexts: translationCalls().flatMap((call) => call.items.map((item) => item.text)),
+            readmeSlots: document.querySelectorAll("#readme .pit-translation-ready").length,
+            fileListSlots: document.querySelectorAll("#folders-and-files .pit-translation-ready, [aria-labelledby='folders-and-files'] .pit-translation-ready").length,
+            fileListCollected: document.querySelectorAll("#folders-and-files[data-pit-id], [aria-labelledby='folders-and-files'] [data-pit-id]").length
+          };
+        } finally {
+          PIT_SITE_RULES.shift();
+        }
+      }
+
       if (name === "partial-batch-failure") {
         setBody(
           '<main><p id="partial-success">This item should remain translated.</p>' +
@@ -1771,6 +1807,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "pipelined-tail",
         "duplicate-fanout",
         "hacker-news-titles",
+        "github-readme-only",
         "partial-batch-failure",
         "semantic-inside",
         "nested-list-lazy-group",
