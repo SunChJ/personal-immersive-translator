@@ -28,6 +28,7 @@ const PIT_STATE = {
   pendingQueue: new Map(),
   pendingIds: new Set(),
   pendingDraining: 0,
+  initialPageBatchRunning: false,
   pendingTimer: null,
   pendingQueuedAt: 0,
   nextPendingBatchSequence: 1,
