@@ -62,15 +62,21 @@ async function translatePage(options) {
       priority: 2,
       translationEpoch
     });
-    const translated = pending.cached + await flushPendingTranslationQueue(
-      translationEpoch,
-      "Translating",
-      {
-        firstBatchPriority: "visible",
-        remainingBatchPriority: "background",
-        firstBatchLeadMs: PIT_FIRST_BATCH_LEAD_MS
-      }
-    );
+    let translated = pending.cached;
+    PIT_STATE.initialPageBatchRunning = true;
+    try {
+      translated += await flushPendingTranslationQueue(
+        translationEpoch,
+        "Translating",
+        {
+          firstBatchPriority: "visible",
+          remainingBatchPriority: "background",
+          firstBatchLeadMs: PIT_FIRST_BATCH_LEAD_MS
+        }
+      );
+    } finally {
+      PIT_STATE.initialPageBatchRunning = false;
+    }
 
     if (location.href !== PIT_STATE.dynamicRouteUrl) {
       handlePossibleRouteChange(options);
@@ -108,6 +114,7 @@ async function translatePage(options) {
     }
     throw error;
   } finally {
+    PIT_STATE.initialPageBatchRunning = false;
     PIT_STATE.running = false;
     updateFloatingState();
     schedulePendingTranslationDrain();
@@ -193,7 +200,9 @@ function takeTranslationBatch(entries, offset, maxItems, maxChars) {
 // memory pressure without improving interactive latency.
 const PIT_MAX_REMOTE_CONCURRENT_PAGE_BATCHES = 2;
 const PIT_MAX_LOCAL_CONCURRENT_PAGE_BATCHES = 1;
-const PIT_FIRST_BATCH_LEAD_MS = 120;
+// Preserve first-screen latency under constrained model capacity. A bounded
+// fallback still lets the tail proceed if the visible request stalls.
+const PIT_FIRST_BATCH_LEAD_MS = 20000;
 // Dynamic pages often reveal a few text nodes over several mutation callbacks.
 // Let those background-only updates settle into one turn, but never hold them
 // long enough to feel stalled.
@@ -223,7 +232,7 @@ async function translateBlocks(
   let firstError = null;
   let nextBatchIndex = 0;
 
-  async function sendBatch(batch, priority) {
+  async function sendBatchOnce(batch, priority) {
     if (location.href !== sourceUrl) {
       handlePossibleRouteChange(options);
     }
@@ -328,6 +337,24 @@ async function translateBlocks(
     return true;
   }
 
+  async function sendBatch(batch, priority) {
+    try {
+      return await sendBatchOnce(batch, priority);
+    } catch (error) {
+      const remaining = batch.filter((entry) => !hasCompletedTranslation(entry));
+      if (!isRecoverableStructuredOutputError(error) || remaining.length <= 1) {
+        throw error;
+      }
+
+      const splitIndex = Math.ceil(remaining.length / 2);
+      await Promise.all([
+        sendBatch(remaining.slice(0, splitIndex), priority),
+        sendBatch(remaining.slice(splitIndex), priority)
+      ]);
+      return true;
+    }
+  }
+
   async function worker(priority) {
     while (nextBatchIndex < batches.length) {
       if (PIT_STATE.cancelRequested || firstError) {
@@ -401,6 +428,16 @@ async function translateBlocks(
   }
 
   return translatedItems;
+}
+
+function isRecoverableStructuredOutputError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return message.includes("invalid response")
+    || message.includes("structured output")
+    || message.includes("malformed")
+    || message.includes("correct format")
+    || message.includes("格式不正确")
+    || message.includes("翻译结果无效");
 }
 
 function enqueuePendingTranslations(entries, options, { force = false, priority = 0, translationEpoch = PIT_STATE.translationEpoch } = {}) {
@@ -531,6 +568,7 @@ function removePendingTranslationJob(job) {
 function schedulePendingTranslationDrain(delayMs = PIT_BACKGROUND_BATCH_DEBOUNCE_MS, resetTimer = true) {
   if (
     PIT_STATE.pendingQueue.size === 0 ||
+    PIT_STATE.initialPageBatchRunning ||
     PIT_STATE.pendingDraining >= maximumConcurrentPageBatches()
   ) {
     return;

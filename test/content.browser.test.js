@@ -127,9 +127,9 @@ test("local provider keeps only one page batch in flight", async () => {
   assert.equal(result.batchSizes.reduce((sum, size) => sum + size, 0), 45);
 });
 
-test("first visible batch pipelines the tail without waiting for completion", async () => {
+test("first visible batch completes before the background tail starts", async () => {
   const result = await getBrowserSuiteResult("pipelined-tail");
-  assert.equal(result.tailStartedBeforeFirstResolved, true);
+  assert.equal(result.tailStartedBeforeFirstResolved, false);
   assert.deepEqual(result.batchSizes, [6, 8, 8, 8, 8, 7]);
 });
 
@@ -167,6 +167,13 @@ test("a partial batch failure keeps successful items rendered", async () => {
   assert.equal(result.readySlots, 1);
   assert.equal(result.failedSlots, 1);
   assert.equal(result.successText, "translated:This item should remain translated.");
+});
+
+test("malformed structured output is recovered by splitting the browser batch", async () => {
+  const result = await getBrowserSuiteResult("structured-output-split");
+  assert.equal(result.readySlots, 8);
+  assert.equal(result.failedSlots, 0);
+  assert.deepEqual(result.batchSizes, [8, 4, 4, 2, 2, 2, 2]);
 });
 
 test("semantic elements receive span translations inside their owner", async () => {
@@ -230,9 +237,10 @@ test("dynamic backlog drains all 80 discovered blocks", { timeout: 20000 }, asyn
   assert.equal(result.running, false);
 });
 
-test("upward scrolling shows pending slots before the initial batch completes", async () => {
+test("upward scrolling queues pending slots without competing with the initial batch", async () => {
   const result = await getBrowserSuiteResult("upward-pending");
   assert.equal(result.upwardPending, true);
+  assert.equal(result.upwardRequestStartedBeforeFirstResolved, false);
   assert.equal(result.topReady, true);
 });
 
@@ -1207,8 +1215,9 @@ function createHarnessHtml(routeSources, contentSources) {
           }));
         });
         const translating = translatePage(TEST_OPTIONS);
-        await waitFor(() => translationCalls().length === 2, 4000, "the pipelined tail request");
-        const tailStartedBeforeFirstResolved = releases.length === 2;
+        await waitFor(() => translationCalls().length === 1, 4000, "the first visible request");
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        const tailStartedBeforeFirstResolved = translationCalls().length > 1;
         window.__pitRuntime.send = window.__pitDefaultSend;
         releases.splice(0).forEach((release) => release());
         await translating;
@@ -1381,6 +1390,25 @@ function createHarnessHtml(routeSources, contentSources) {
           readySlots: document.querySelectorAll(".pit-translation-ready").length,
           failedSlots: document.querySelectorAll(".pit-translation-failed").length,
           successText: document.querySelector("#partial-success > .pit-translation-ready")?.textContent || ""
+        };
+      }
+
+      if (name === "structured-output-split") {
+        const paragraphs = Array.from({ length: 8 }, (_, index) => (
+          '<p>Structured output recovery paragraph ' + index + ' remains readable.</p>'
+        )).join("");
+        setBody("<main>" + paragraphs + "</main>");
+        window.__pitRuntime.send = async (message) => {
+          if (message.items.length > 3) {
+            return { ok: false, error: "Invalid response: malformed structured output." };
+          }
+          return window.__pitDefaultSend(message);
+        };
+        await translatePage({ ...TEST_OPTIONS, batchSize: 8 });
+        return {
+          batchSizes: translationCalls().map((call) => call.items.length),
+          readySlots: document.querySelectorAll(".pit-translation-ready").length,
+          failedSlots: document.querySelectorAll(".pit-translation-failed").length
         };
       }
 
@@ -1589,17 +1617,21 @@ function createHarnessHtml(routeSources, contentSources) {
           "the upward-scroll pending surface"
         );
         const upwardPending = Boolean(document.querySelector("#up-0 > .pit-translation-pending"));
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        const upwardRequestStartedBeforeFirstResolved = typeof releaseUpward === "function";
+        release();
         await waitFor(() => typeof releaseUpward === "function", 4000, "the upward-scroll request");
         releaseUpward();
-        release();
         await translating;
         await waitFor(
           () => document.querySelector("#up-0 > .pit-translation-ready"),
           6000,
           "the completed upward-scroll translation"
         );
+        await waitFor(() => !PIT_STATE.running, 4000, "the upward-scroll queue to drain");
         return {
           upwardPending,
+          upwardRequestStartedBeforeFirstResolved,
           topReady: Boolean(document.querySelector("#up-0 > .pit-translation-ready"))
         };
       }
@@ -1809,6 +1841,7 @@ function createHarnessHtml(routeSources, contentSources) {
         "hacker-news-titles",
         "github-readme-only",
         "partial-batch-failure",
+        "structured-output-split",
         "semantic-inside",
         "nested-list-lazy-group",
         "font-size-inheritance",

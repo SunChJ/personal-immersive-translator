@@ -21,9 +21,9 @@ const PIT_LEGACY_TARGET_LANGUAGE_ALIASES = new Map([
   ["韩文", "Korean"],
   ["韩语", "Korean"]
 ]);
-const PIT_DEFAULT_BATCH_ITEMS = 8;
+const PIT_DEFAULT_BATCH_ITEMS = 32;
 const PIT_MAX_BATCH_ITEMS = 40;
-const PIT_DEFAULT_BATCH_CHAR_LIMIT = 800;
+const PIT_DEFAULT_BATCH_CHAR_LIMIT = 3200;
 const PIT_DEFAULT_TTS_RATE = 1;
 const PIT_HEALTH_TIMEOUT_MS = 5000;
 const PIT_TARGET_LANGUAGE_PATTERN = /^[\p{L}\p{M}\p{N} _(),.'’-]{1,100}$/u;
