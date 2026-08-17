@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.6 - 2026-08-17
+
+- Prioritized the first visible translation batch and deferred lazy viewport work until that batch completes, preventing background requests from competing for constrained Spark capacity.
+- Increased background page batches to 32 items and 3,200 characters while retaining the 6-item, 600-character first-screen batch and two remote workers.
+- Recovered malformed structured output by recursively splitting only the failed browser batch instead of failing the whole page.
+- Skipped GitHub repository file lists while continuing to translate README content.
+
 ## 0.5.5 - 2026-08-07
 
 - Added Safari YouTube subtitle parity through Safari's native Main World content-script support, including caption-track discovery, POT-aware timed-text fetching, the player control, and the popup setting.
